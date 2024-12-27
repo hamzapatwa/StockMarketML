@@ -51,7 +51,6 @@ def load_data_for_ticker(ticker, hist_folder='hist'):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"No CSV file found for ticker {ticker} at {file_path}.")
 
-    # Rename "Datetime" to "Date" to keep consistency
     df = pd.read_csv(file_path, skiprows=[1, 2])
     df.rename(columns={
         "Price": "Date",  # Rename "Price" to "Date" if applicable
@@ -63,7 +62,6 @@ def load_data_for_ticker(ticker, hist_folder='hist'):
         "Volume": "Volume"
     }, inplace=True)
 
-    # Parse 1-min timestamps (may contain time zone)
     df['Date'] = pd.to_datetime(df['Date'], utc=True)
     df.set_index('Date', inplace=True, drop=True)
     return df
@@ -73,7 +71,6 @@ def compute_indicators(df):
     df = df.copy()
     df.sort_index(inplace=True)
 
-    # Intraday rolling windows (e.g., 10-min, 50-min, 200-min)
     df['MA_10'] = df['Close'].rolling(window=10).mean()
     df['MA_50'] = df['Close'].rolling(window=50).mean()
     df['MA_200'] = df['Close'].rolling(window=200).mean()
@@ -111,32 +108,24 @@ def create_labels(df, threshold=0.0025):  # Lowered threshold to 0.25%
     choices = [2, 0]  # 2=BUY, 0=SELL
     df['Action'] = np.select(conditions, choices, default=1)  # 1=HOLD
 
-    # Log class distribution
     class_counts = df['Action'].value_counts()
     print(f"Class distribution for threshold {threshold}:")
     print(class_counts)
-
     return df
 
 
 ###############################################################################
-# 2. TRAINING MODELS (CLASSIFICATION + REGRESSION FOR NEXT-DAY O/H/L/C)
+# 2. TRAINING MODELS
 ###############################################################################
 def train_models_for_ticker(ticker, df):
-    """
-    Trains classification models for BUY/SELL/HOLD,
-    plus regression models for next-day Open, High, Low, Close.
-    """
-    # ==================== CLASSIFICATION (BUY/SELL/HOLD) ====================
     feature_cols = [
         'Close', 'High', 'Low', 'Open', 'Volume',
         'MA_10', 'MA_50', 'MA_200',
         'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist'
     ]
     X_class = df[feature_cols].values
-    y_class = df['Action'].values  # 0=SELL, 1=HOLD, 2=BUY
+    y_class = df['Action'].values
 
-    # Check if there are at least two classes
     unique_classes = np.unique(y_class)
     if len(unique_classes) < 2:
         print(f"Skipping ticker {ticker}: only one class present ({unique_classes[0]})")
@@ -150,7 +139,6 @@ def train_models_for_ticker(ticker, df):
     X_train_c_scaled = scaler.fit_transform(X_train_c)
     X_test_c_scaled = scaler.transform(X_test_c)
 
-    # Classification models
     lr = LogisticRegression(multi_class='multinomial', max_iter=1000)
     lr.fit(X_train_c_scaled, y_train_c)
 
@@ -166,9 +154,7 @@ def train_models_for_ticker(ticker, df):
         'MLP': mlp
     }
 
-    # ==================== REGRESSION FOR NEXT-DAY O/H/L/C ====================
     df_reg = df.copy()
-    # SHIFT target columns by -1
     df_reg['Next_Open'] = df_reg['Open'].shift(-1)
     df_reg['Next_High'] = df_reg['High'].shift(-1)
     df_reg['Next_Low'] = df_reg['Low'].shift(-1)
@@ -176,19 +162,14 @@ def train_models_for_ticker(ticker, df):
     df_reg.dropna(inplace=True)
 
     X_reg = df_reg[feature_cols].values
-    # Create separate Y vectors
     y_open = df_reg['Next_Open'].values
     y_high = df_reg['Next_High'].values
     y_low = df_reg['Next_Low'].values
     y_close = df_reg['Next_Close'].values
 
-    # For consistency, let's match the classification split sizes
-    # (Though you could do separate splits if you prefer)
     X_train_r, X_test_r = X_reg[:len(X_train_c)], X_reg[len(X_train_c):]
-
     X_train_r_scaled = scaler.transform(X_train_r)
 
-    # Example: using RandomForestRegressor
     open_reg = RandomForestRegressor(n_estimators=50)
     high_reg = RandomForestRegressor(n_estimators=50)
     low_reg = RandomForestRegressor(n_estimators=50)
@@ -206,16 +187,11 @@ def train_models_for_ticker(ticker, df):
         'NextCloseReg': close_reg
     }
 
-    # Combine everything
     all_models = {**classification_models, **regression_models}
     return all_models, scaler
 
 
 def train_all_tickers_with_progress():
-    """
-    Train models for each CSV found in `hist/`.
-    Update progress_data for SSE-based progress bar.
-    """
     global MODELS, SCALERS, progress_data
 
     tickers = list_tickers()
@@ -244,7 +220,7 @@ def train_all_tickers_with_progress():
         with progress_lock:
             progress_data['current'] += 1
 
-        time.sleep(0.5)  # purely to visualize progress in a slower manner
+        time.sleep(0.5)
 
     save_models()
     with progress_lock:
@@ -269,119 +245,6 @@ def load_models(filename='models.pkl'):
 ###############################################################################
 # 4. ADVANCED BACKTESTING (MINUTE-BASED)
 ###############################################################################
-def advanced_backtest_portfolio(tickers, model_name,
-                                initial_capital=10000,
-                                stop_loss_percent=0.05,
-                                partial_sell_ratio=0.5,
-                                prob_threshold=0.6,
-                                trailing_stop=True,
-                                take_profit_percent=0.2):
-    """
-    Distributes 'initial_capital' equally among 'tickers'.
-    Runs advanced_backtest on each ticker with that portion of capital,
-    then sums up daily portfolio values.
-    """
-    if not tickers:
-        return None, "No tickers selected!", [], [], {}
-
-    # How many tickers? We'll split capital equally.
-    n = len(tickers)
-    capital_per_ticker = initial_capital / n
-
-    # A dict to store each ticker's daily values by date
-    ticker_values_by_date = {}
-
-    for t in tickers:
-        # Reuse your existing advanced_backtest but pass 'capital_per_ticker'
-        final_val, final_ret_str, daily_dates, daily_vals, metrics = advanced_backtest(
-            t, model_name,
-            initial_capital=capital_per_ticker,
-            stop_loss_percent=stop_loss_percent,
-            partial_sell_ratio=partial_sell_ratio,
-            prob_threshold=prob_threshold,
-            trailing_stop=trailing_stop,
-            take_profit_percent=take_profit_percent
-        )
-        if final_val is None:
-            # if advanced_backtest returned an error, skip or handle
-            print(f"Skipping {t} due to error: {final_ret_str}")
-            continue
-
-        # Store the time series in a DataFrame for easy merging
-        df_vals = pd.DataFrame({
-            'Date': daily_dates,
-            'Value': daily_vals
-        }).set_index('Date')
-        ticker_values_by_date[t] = df_vals
-
-    if not ticker_values_by_date:
-        return None, "No valid tickers after backtest", [], [], {}
-
-    # Merge them by date, fill missing with forward/back fill if needed, sum across columns
-    combined_df = None
-    for t, df_vals in ticker_values_by_date.items():
-        if combined_df is None:
-            combined_df = df_vals.rename(columns={'Value': t})
-        else:
-            combined_df = combined_df.join(df_vals.rename(columns={'Value': t}), how='outer')
-
-    # Sort by date, fill missing
-    combined_df.sort_index(inplace=True)
-    combined_df.fillna(method='ffill', inplace=True)
-    combined_df.fillna(method='bfill', inplace=True)
-
-    # Sum across all tickers to get portfolio value
-    combined_df['PortfolioValue'] = combined_df.sum(axis=1)
-
-    # Now compute final metrics (Sharpe, etc.) on combined portfolio
-    daily_values = combined_df['PortfolioValue'].tolist()
-    daily_dates = combined_df.index.tolist()
-
-    final_value = daily_values[-1] if daily_values else initial_capital
-    final_return = (final_value - initial_capital) / initial_capital * 100.0
-    final_return_str = f"{final_return:.2f}%"
-
-    if len(daily_values) <= 1:
-        # Not enough data
-        metrics = {
-            'FinalValue': f"{final_value:.2f}",
-            'PercentReturn': final_return_str,
-            'SharpeRatio': "N/A",
-            'MaxDrawdown': "N/A"
-        }
-        return final_value, final_return_str, daily_dates, daily_values, metrics
-
-    # Compute daily returns
-    daily_returns = []
-    for i in range(1, len(daily_values)):
-        ret = (daily_values[i] - daily_values[i-1]) / (daily_values[i-1] + 1e-9)
-        daily_returns.append(ret)
-
-    if len(daily_returns) > 1:
-        mean_ret = np.mean(daily_returns)
-        std_ret = np.std(daily_returns, ddof=1)
-        sharpe = (mean_ret / (std_ret + 1e-9)) * np.sqrt(252*390)  # for 1-min intraday
-    else:
-        sharpe = 0.0
-
-    running_max = -np.inf
-    drawdowns = []
-    for val in daily_values:
-        if val > running_max:
-            running_max = val
-        dd = (val - running_max) / (running_max + 1e-9)
-        drawdowns.append(dd)
-    max_drawdown = min(drawdowns)
-    max_drawdown_str = f"{max_drawdown * 100:.2f}%"
-
-    metrics = {
-        'FinalValue': f"{final_value:.2f}",
-        'PercentReturn': final_return_str,
-        'SharpeRatio': f"{sharpe:.3f}",
-        'MaxDrawdown': max_drawdown_str
-    }
-
-    return final_value, final_return_str, daily_dates, daily_values, metrics
 
 def advanced_backtest(ticker, model_name,
                       initial_capital=10000,
@@ -390,10 +253,6 @@ def advanced_backtest(ticker, model_name,
                       prob_threshold=0.6,
                       trailing_stop=True,
                       take_profit_percent=0.2):
-    """
-    Each row = 1 minute. The strategy can place multiple intraday trades
-    as signals occur. Minimal changes from the daily approach.
-    """
     if ticker not in MODELS or ticker not in SCALERS:
         return None, "No models found for this ticker.", None, None, {}
 
@@ -438,7 +297,6 @@ def advanced_backtest(ticker, model_name,
         daily_values.append(daily_portfolio_value)
         daily_dates.append(date_idx)
 
-        # Update trailing stops
         for pos in positions:
             if trailing_stop:
                 if current_price > pos['highest_price']:
@@ -512,7 +370,7 @@ def advanced_backtest(ticker, model_name,
     if len(daily_returns) > 1:
         mean_ret = np.mean(daily_returns)
         std_ret = np.std(daily_returns, ddof=1)
-        sharpe = (mean_ret / (std_ret + 1e-9)) * np.sqrt(252 * 390)  # Adjusted for intraday
+        sharpe = (mean_ret / (std_ret + 1e-9)) * np.sqrt(252 * 390)
     else:
         sharpe = 0.0
 
@@ -536,37 +394,133 @@ def advanced_backtest(ticker, model_name,
     return final_value, final_return_str, daily_dates, daily_values, metrics
 
 
+def advanced_backtest_portfolio(tickers, model_name,
+                                initial_capital=10000,
+                                stop_loss_percent=0.05,
+                                partial_sell_ratio=0.5,
+                                prob_threshold=0.6,
+                                trailing_stop=True,
+                                take_profit_percent=0.2):
+    if not tickers:
+        return None, "No tickers selected!", [], [], {}
+
+    n = len(tickers)
+    capital_per_ticker = initial_capital / n
+    ticker_values_by_date = {}
+
+    for t in tickers:
+        final_val, final_ret_str, daily_dates, daily_vals, metrics = advanced_backtest(
+            t, model_name,
+            initial_capital=capital_per_ticker,
+            stop_loss_percent=stop_loss_percent,
+            partial_sell_ratio=partial_sell_ratio,
+            prob_threshold=prob_threshold,
+            trailing_stop=trailing_stop,
+            take_profit_percent=take_profit_percent
+        )
+        if final_val is None:
+            print(f"Skipping {t} due to error: {final_ret_str}")
+            continue
+
+        df_vals = pd.DataFrame({
+            'Date': daily_dates,
+            'Value': daily_vals
+        }).set_index('Date')
+        ticker_values_by_date[t] = df_vals
+
+    if not ticker_values_by_date:
+        return None, "No valid tickers after backtest", [], [], {}
+
+    combined_df = None
+    for t, df_vals in ticker_values_by_date.items():
+        if combined_df is None:
+            combined_df = df_vals.rename(columns={'Value': t})
+        else:
+            combined_df = combined_df.join(df_vals.rename(columns={'Value': t}), how='outer')
+
+    combined_df.sort_index(inplace=True)
+    combined_df.fillna(method='ffill', inplace=True)
+    combined_df.fillna(method='bfill', inplace=True)
+
+    combined_df['PortfolioValue'] = combined_df.sum(axis=1)
+
+    daily_values = combined_df['PortfolioValue'].tolist()
+    daily_dates = combined_df.index.tolist()
+
+    final_value = daily_values[-1] if daily_values else initial_capital
+    final_return = (final_value - initial_capital) / initial_capital * 100.0
+    final_return_str = f"{final_return:.2f}%"
+
+    if len(daily_values) <= 1:
+        metrics = {
+            'FinalValue': f"{final_value:.2f}",
+            'PercentReturn': final_return_str,
+            'SharpeRatio': "N/A",
+            'MaxDrawdown': "N/A"
+        }
+        return final_value, final_return_str, daily_dates, daily_values, metrics
+
+    daily_returns = []
+    for i in range(1, len(daily_values)):
+        ret = (daily_values[i] - daily_values[i - 1]) / (daily_values[i - 1] + 1e-9)
+        daily_returns.append(ret)
+
+    if len(daily_returns) > 1:
+        mean_ret = np.mean(daily_returns)
+        std_ret = np.std(daily_returns, ddof=1)
+        sharpe = (mean_ret / (std_ret + 1e-9)) * np.sqrt(252 * 390)
+    else:
+        sharpe = 0.0
+
+    running_max = -np.inf
+    drawdowns = []
+    for val in daily_values:
+        if val > running_max:
+            running_max = val
+        dd = (val - running_max) / (running_max + 1e-9)
+        drawdowns.append(dd)
+    max_drawdown = min(drawdowns)
+    max_drawdown_str = f"{max_drawdown * 100:.2f}%"
+
+    metrics = {
+        'FinalValue': f"{final_value:.2f}",
+        'PercentReturn': final_return_str,
+        'SharpeRatio': f"{sharpe:.3f}",
+        'MaxDrawdown': max_drawdown_str
+    }
+
+    return final_value, final_return_str, daily_dates, daily_values, metrics
+
+
 ###############################################################################
-# 5. FLASK ROUTES
+# 5. FLASK ROUTES WITH BOOTSTRAP
 ###############################################################################
-
-@app.route('/')
-def index():
-    html = """
-    <h1>Welcome to the Advanced Algorithmic Trading App</h1>
-    <ul>
-      <li><a href="{{ url_for('train') }}">Train Models (SSE Progress)</a></li>
-      <li><a href="{{ url_for('select_backtest_advanced') }}">Run Advanced Backtest (Single Ticker)</a></li>
-      <li><a href="{{ url_for('select_backtest_portfolio') }}">Run Portfolio Backtest (Multiple Tickers)</a></li>
-      <li><a href="{{ url_for('predict_next_day') }}">Predict Next Day O/H/L/C</a></li>
-    </ul>
-    """
-    return render_template_string(html)
-
-
-# ----------------------------------------------------------------------------
-#  Training Page (SSE-based)
-# ----------------------------------------------------------------------------
-@app.route('/train', methods=['GET'])
+@app.route('/train')
 def train():
+    # Our SSE training page, now with Bootstrap styling
     html = """
-    <h1>Train Models for All Tickers</h1>
-    <button onclick="startTraining()">Start Training</button>
-    <div id="status"></div>
-    <div style="width:300px; background:#ccc;">
-      <div id="progressbar" style="width:0px; background:green; height:20px;"></div>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Train Models</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container { max-width: 800px; margin-top: 40px; }
+      </style>
+    </head>
+    <body class="bg-light">
+    <div class="container">
+      <h1 class="mt-4 mb-3">Train Models for All Tickers</h1>
+      <p>Click the button below to start training models.</p>
+      <button class="btn btn-primary" onclick="startTraining()">Start Training</button>
+
+      <div id="status" class="mt-3"></div>
+      <div class="progress" style="width:300px; background:#ccc; margin-top:15px;">
+        <div id="progressbar" class="progress-bar bg-success" role="progressbar" style="width:0%;">
+        </div>
+      </div>
+      <p class="mt-3"><a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a></p>
     </div>
-    <p><a href="{{ url_for('index') }}">Back to Home</a></p>
 
     <script>
       const statusDiv = document.getElementById('status');
@@ -595,20 +549,24 @@ def train():
               pct = (current / total) * 100;
             }
             progressBar.style.width = pct + "%";
+            progressBar.innerHTML = Math.floor(pct) + "%";
             statusDiv.innerHTML = "Training in progress... " + current + "/" + total;
           } else if(status === 'done'){
             progressBar.style.width = "100%";
+            progressBar.innerHTML = "100%";
             statusDiv.innerHTML = "Training complete!";
             evtSource.close();
           }
         };
       }
     </script>
+    </body>
+    </html>
     """
     return render_template_string(html)
 
 
-@app.route('/start_training', methods=['GET'])
+@app.route('/start_training')
 def start_training():
     with progress_lock:
         if progress_data['status'] == 'training':
@@ -636,20 +594,16 @@ def train_progress():
     return Response(generate(), mimetype='text/event-stream')
 
 
-# ----------------------------------------------------------------------------
-#  Advanced Backtest Selection Page
-# ----------------------------------------------------------------------------
 @app.route('/select_backtest_portfolio', methods=['GET', 'POST'])
 def select_backtest_portfolio():
     """
     Displays a more user-friendly form for picking multiple tickers,
-    plus all the other model/capital parameters.
+    plus model/capital parameters.
     """
     tickers = sorted(list_tickers())
     model_names = ['LogisticRegression', 'RandomForest', 'MLP']
 
     if request.method == 'POST':
-        # The hidden field "selected_tickers" holds the final comma-separated list
         selected_tickers_str = request.form.get('selected_tickers', '')
         selected_tickers = [t.strip() for t in selected_tickers_str.split(',') if t.strip()]
 
@@ -672,79 +626,105 @@ def select_backtest_portfolio():
                                 trailing_stop='1' if trailing_stop else '0',
                                 take_profit_percent=take_profit_percent))
 
-    # GET => show the HTML form for multiple ticker selection
+    # GET => show a more user-friendly form
     html = """
-    <h1>Portfolio Backtesting Setup</h1>
-    <p>Type or search a ticker below and click "Add" to move it to your selected list. 
-       Then "Remove" to remove from your list if needed.</p>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Portfolio Backtesting Setup</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container { max-width: 900px; margin-top: 40px; }
+        .ticker-box { min-width: 180px; }
+      </style>
+    </head>
+    <body class="bg-light">
+    <div class="container">
+      <h1 class="mb-4">Portfolio Backtesting Setup</h1>
+      <p>Type or search a ticker below and click "Add" to move it to your selected list. 
+         Then "Remove" to remove from your list if needed.</p>
 
-    <div>
-      <label for="ticker_search">Search Ticker:</label>
-      <input type="text" id="ticker_search" onkeyup="filterTickers()" placeholder="Type to filter...">
-    </div>
-
-    <br>
-    <div style="display:flex; gap:20px;">
-      <div>
-        <h4>All Tickers</h4>
-        <select id="all_tickers" size="10" style="min-width:150px;">
-          {% for t in tickers %}
-          <option value="{{t}}">{{t}}</option>
-          {% endfor %}
-        </select>
-        <br>
-        <button type="button" onclick="addTicker()">Add &raquo;</button>
+      <div class="row mb-3">
+        <div class="col-12 col-md-6 mb-2">
+          <label for="ticker_search" class="form-label">Search Ticker:</label>
+          <input type="text" id="ticker_search" onkeyup="filterTickers()" 
+                 class="form-control" placeholder="Type to filter...">
+        </div>
       </div>
 
-      <div>
-        <h4>Selected Tickers</h4>
-        <select id="selected_tickers_list" size="10" style="min-width:150px;">
-        </select>
-        <br>
-        <button type="button" onclick="removeTicker()">&laquo; Remove</button>
+      <div class="row">
+        <div class="col-12 col-md-5">
+          <h5>All Tickers</h5>
+          <select id="all_tickers" size="10" class="form-select ticker-box">
+            {% for t in tickers %}
+            <option value="{{t}}">{{t}}</option>
+            {% endfor %}
+          </select>
+          <br>
+          <button type="button" class="btn btn-sm btn-primary" onclick="addTicker()">Add &raquo;</button>
+        </div>
+
+        <div class="col-12 col-md-5">
+          <h5>Selected Tickers</h5>
+          <select id="selected_tickers_list" size="10" class="form-select ticker-box">
+          </select>
+          <br>
+          <button type="button" class="btn btn-sm btn-danger" onclick="removeTicker()">&laquo; Remove</button>
+        </div>
       </div>
+
+      <hr class="my-4">
+
+      <form method="POST" id="portfolioForm" class="row g-3">
+        <input type="hidden" name="selected_tickers" id="hidden_selected_tickers">
+
+        <div class="col-md-4">
+          <label class="form-label">Model:</label>
+          <select name="model_name" class="form-select">
+            {% for m in model_names %}
+            <option value="{{m}}">{{m}}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Initial Capital:</label>
+          <input type="number" name="initial_capital" value="10000" step="100" class="form-control" />
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Stop-Loss %:</label>
+          <input type="number" name="stop_loss_percent" value="0.05" step="0.01" class="form-control" />
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Partial Sell Ratio:</label>
+          <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" class="form-control" />
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Probability Threshold (0~1):</label>
+          <input type="number" name="prob_threshold" value="0.6" step="0.05" class="form-control" />
+        </div>
+
+        <div class="col-md-4">
+          <div class="form-check mt-4">
+            <input type="checkbox" name="trailing_stop" class="form-check-input" id="trailingStopCheck" />
+            <label for="trailingStopCheck" class="form-check-label">Trailing Stop?</label>
+          </div>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Take Profit %:</label>
+          <input type="number" name="take_profit_percent" value="0.2" step="0.05" class="form-control" />
+        </div>
+
+        <div class="col-12">
+          <button type="submit" onclick="prepareSelectedTickers()" class="btn btn-success">Run Portfolio Backtest</button>
+          <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a>
+        </div>
+      </form>
     </div>
-
-    <br><br>
-    <form method="POST" id="portfolioForm">
-      <input type="hidden" name="selected_tickers" id="hidden_selected_tickers">
-
-      <label>Model:</label>
-      <select name="model_name">
-        {% for m in model_names %}
-        <option value="{{m}}">{{m}}</option>
-        {% endfor %}
-      </select>
-      <br><br>
-
-      <label>Initial Capital:</label>
-      <input type="number" name="initial_capital" value="10000" step="100" />
-      <br><br>
-
-      <label>Stop-Loss % (e.g. 0.05=5%):</label>
-      <input type="number" name="stop_loss_percent" value="0.05" step="0.01" />
-      <br><br>
-
-      <label>Partial Sell Ratio (e.g. 0.5=50%):</label>
-      <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" />
-      <br><br>
-
-      <label>Probability Threshold (0 to 1):</label>
-      <input type="number" name="prob_threshold" value="0.6" step="0.05" />
-      <br><br>
-
-      <label>Trailing Stop?</label>
-      <input type="checkbox" name="trailing_stop" />
-      <br><br>
-
-      <label>Take Profit % (e.g. 0.2=20%):</label>
-      <input type="number" name="take_profit_percent" value="0.2" step="0.05" />
-      <br><br>
-
-      <button type="submit" onclick="prepareSelectedTickers()">Run Portfolio Backtest</button>
-    </form>
-
-    <p><a href="{{ url_for('index') }}">Back to Home</a></p>
 
     <script>
       function addTicker(){
@@ -752,7 +732,6 @@ def select_backtest_portfolio():
         const selectedList = document.getElementById('selected_tickers_list');
         if(allList.selectedIndex >= 0){
           let opt = allList.options[allList.selectedIndex];
-          // create new <option> for selectedList
           let newOpt = document.createElement('option');
           newOpt.value = opt.value;
           newOpt.text = opt.text;
@@ -791,15 +770,14 @@ def select_backtest_portfolio():
         }
       }
     </script>
+    </body>
+    </html>
     """
     return render_template_string(html, tickers=tickers, model_names=model_names)
 
+
 @app.route('/backtest_portfolio')
 def backtest_portfolio():
-    """
-    Executes a portfolio-level backtest given multiple tickers in the URL (comma-separated).
-    Also shows a re-run form and a 'Back to Portfolio Setup' link.
-    """
     tickers_str = request.args.get('tickers', '')
     model_name = request.args.get('model_name')
     initial_capital = float(request.args.get('initial_capital', '10000'))
@@ -814,7 +792,6 @@ def backtest_portfolio():
     else:
         return "<p>Error: No tickers provided.</p>"
 
-    # Reuse your 'advanced_backtest_portfolio' logic or however you're combining results
     (final_val, final_ret_str, daily_dates, daily_values, metrics) = advanced_backtest_portfolio(
         selected_tickers, model_name,
         initial_capital=initial_capital,
@@ -828,7 +805,6 @@ def backtest_portfolio():
     if final_val is None:
         return f"<p>Error: {final_ret_str}</p>"
 
-    # Plot the combined daily_values
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(daily_dates, daily_values, label='Portfolio Value')
     ax.set_title(f"Portfolio Backtest: {', '.join(selected_tickers)} - {model_name}")
@@ -843,73 +819,102 @@ def backtest_portfolio():
     encoded = base64.b64encode(pngImage.getvalue()).decode('ascii')
     plt.close(fig)
 
-    img_html = f'<img src="data:image/png;base64,{encoded}" alt="Portfolio Chart"/>'
+    img_html = f'<img src="data:image/png;base64,{encoded}" class="img-fluid" alt="Portfolio Chart"/>'
 
     result_html = f"""
-    <p>Final Capital: {metrics['FinalValue']}</p>
-    <p>Percent Return: {metrics['PercentReturn']}</p>
-    <p>Sharpe Ratio: {metrics['SharpeRatio']}</p>
-    <p>Max Drawdown: {metrics['MaxDrawdown']}</p>
+    <p><strong>Final Capital:</strong> {metrics['FinalValue']}</p>
+    <p><strong>Percent Return:</strong> {metrics['PercentReturn']}</p>
+    <p><strong>Sharpe Ratio:</strong> {metrics['SharpeRatio']}</p>
+    <p><strong>Max Drawdown:</strong> {metrics['MaxDrawdown']}</p>
     """
 
-    # Build a re-run form just like single ticker,
-    # but including the multi-ticker info and all relevant fields
     trailing_stop_checked = 'checked' if trailing_stop else ''
     re_run_form = f"""
     <hr>
-    <h2>Refine Your Portfolio Backtest</h2>
-    <form method="GET" action="{ url_for('backtest_portfolio') }">
+    <h3>Refine Your Portfolio Backtest</h3>
+    <form method="GET" action="{url_for('backtest_portfolio')}" class="row g-3 mt-2">
       <input type="hidden" name="tickers" value="{tickers_str}" />
 
-      <label>Model:</label>
-      <select name="model_name">
-        <option value="LogisticRegression" {"selected" if model_name == "LogisticRegression" else ""}>LogisticRegression</option>
-        <option value="RandomForest" {"selected" if model_name == "RandomForest" else ""}>RandomForest</option>
-        <option value="MLP" {"selected" if model_name == "MLP" else ""}>MLP</option>
-      </select>
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Model:</label>
+        <select name="model_name" class="form-select">
+          <option value="LogisticRegression" {"selected" if model_name == "LogisticRegression" else ""}>LogisticRegression</option>
+          <option value="RandomForest" {"selected" if model_name == "RandomForest" else ""}>RandomForest</option>
+          <option value="MLP" {"selected" if model_name == "MLP" else ""}>MLP</option>
+        </select>
+      </div>
 
-      <label>Initial Capital:</label>
-      <input type="number" name="initial_capital" value="{initial_capital}" step="100" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Initial Capital:</label>
+        <input type="number" name="initial_capital" value="{initial_capital}" step="100" class="form-control"/>
+      </div>
 
-      <label>Stop-Loss % (e.g., 0.05=5%):</label>
-      <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Stop-Loss %:</label>
+        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" class="form-control"/>
+      </div>
 
-      <label>Partial Sell Ratio (e.g., 0.5=50%):</label>
-      <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Partial Sell Ratio:</label>
+        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" class="form-control"/>
+      </div>
 
-      <label>Probability Threshold (0 to 1):</label>
-      <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Probability Threshold:</label>
+        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" class="form-control"/>
+      </div>
 
-      <label>Trailing Stop?</label>
-      <input type="checkbox" name="trailing_stop" {trailing_stop_checked} />
-      <br><br>
+      <div class="col-md-4 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="trailing_stop" {trailing_stop_checked} id="trailingStopCheck2">
+          <label class="form-check-label" for="trailingStopCheck2">Trailing Stop?</label>
+        </div>
+      </div>
 
-      <label>Take Profit % (e.g., 0.2=20%):</label>
-      <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Take Profit %:</label>
+        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" class="form-control"/>
+      </div>
 
-      <button type="submit">Re-Run Portfolio Backtest</button>
+      <div class="col-12">
+        <button type="submit" class="btn btn-primary">Re-Run Portfolio Backtest</button>
+      </div>
     </form>
     """
 
     page_html = f"""
-    <h1>Portfolio Backtest Results</h1>
-    <h2>Tickers: {', '.join(selected_tickers)} - {model_name}</h2>
-    {result_html}
-    {img_html}
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Portfolio Backtest Results</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container {{ max-width: 900px; margin-top: 40px; }}
+      </style>
+    </head>
+    <body class="bg-light">
+    <div class="container">
+      <h1>Portfolio Backtest Results</h1>
+      <h5>Tickers: {', '.join(selected_tickers)} - {model_name}</h5>
+      <div class="mt-3">
+        {result_html}
+      </div>
+      <div class="mt-4">
+        {img_html}
+      </div>
 
-    {re_run_form}
+      <div class="mt-5">
+        {re_run_form}
+      </div>
 
-    <hr>
-    <!-- Fixing the link: now it references 'select_backtest_portfolio' properly -->
-    <p><a href="{{{{ url_for('select_backtest_portfolio') }}}}">Back to Portfolio Setup</a></p>
+      <hr class="my-4">
+      <p><a href="{{{{ url_for('select_backtest_portfolio') }}}}" class="btn btn-secondary">Back to Portfolio Setup</a></p>
+    </div>
+    </body>
+    </html>
     """
     return render_template_string(page_html)
+
 
 @app.route('/select_backtest_advanced', methods=['GET', 'POST'])
 def select_backtest_advanced():
@@ -937,59 +942,75 @@ def select_backtest_advanced():
                                 take_profit_percent=take_profit_percent))
 
     html = """
-    <h1>Advanced Backtesting Setup</h1>
-    <form method="POST">
-      <label>Ticker:</label>
-      <select name="ticker">
-        {% for t in tickers %}
-        <option value="{{t}}">{{t}}</option>
-        {% endfor %}
-      </select>
-      <br><br>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Advanced Backtesting Setup</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container { max-width: 700px; margin-top: 40px; }
+      </style>
+    </head>
+    <body class="bg-light">
+    <div class="container">
+      <h1>Advanced Backtesting Setup</h1>
+      <form method="POST" class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">Ticker:</label>
+          <select name="ticker" class="form-select">
+            {% for t in tickers %}
+            <option value="{{t}}">{{t}}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Model:</label>
+          <select name="model_name" class="form-select">
+            {% for m in model_names %}
+            <option value="{{m}}">{{m}}</option>
+            {% endfor %}
+          </select>
+        </div>
 
-      <label>Model:</label>
-      <select name="model_name">
-        {% for m in model_names %}
-        <option value="{{m}}">{{m}}</option>
-        {% endfor %}
-      </select>
-      <br><br>
+        <div class="col-md-4">
+          <label class="form-label">Initial Capital:</label>
+          <input type="number" name="initial_capital" value="10000" step="100" class="form-control"/>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Stop-Loss % (e.g. 0.05=5%):</label>
+          <input type="number" name="stop_loss_percent" value="0.05" step="0.01" class="form-control"/>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Partial Sell Ratio (e.g. 0.5=50%):</label>
+          <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" class="form-control"/>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Probability Threshold (0~1):</label>
+          <input type="number" name="prob_threshold" value="0.6" step="0.05" class="form-control"/>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Take Profit % (e.g. 0.2=20%):</label>
+          <input type="number" name="take_profit_percent" value="0.2" step="0.05" class="form-control"/>
+        </div>
+        <div class="col-md-4 d-flex align-items-end">
+          <div class="form-check">
+            <input type="checkbox" name="trailing_stop" class="form-check-input" id="trailingStopCheckSingle"/>
+            <label for="trailingStopCheckSingle" class="form-check-label">Trailing Stop?</label>
+          </div>
+        </div>
 
-      <label>Initial Capital:</label>
-      <input type="number" name="initial_capital" value="10000" step="100" />
-      <br><br>
-
-      <label>Stop-Loss % (e.g. 0.05=5%):</label>
-      <input type="number" name="stop_loss_percent" value="0.05" step="0.01" />
-      <br><br>
-
-      <label>Partial Sell Ratio (e.g. 0.5=50%):</label>
-      <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" />
-      <br><br>
-
-      <label>Probability Threshold (0~1):</label>
-      <input type="number" name="prob_threshold" value="0.6" step="0.05" />
-      <br><br>
-
-      <label>Trailing Stop?</label>
-      <input type="checkbox" name="trailing_stop" />
-      <br><br>
-
-      <label>Take Profit % (e.g. 0.2=20%):</label>
-      <input type="number" name="take_profit_percent" value="0.2" step="0.05" />
-      <br><br>
-
-      <button type="submit">Run Advanced Backtest</button>
-    </form>
-
-    <p><a href="{{ url_for('index') }}">Back to Home</a></p>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">Run Advanced Backtest</button>
+          <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a>
+        </div>
+      </form>
+    </div>
+    </body>
+    </html>
     """
     return render_template_string(html, tickers=tickers, model_names=model_names)
 
 
-# ----------------------------------------------------------------------------
-#  The Advanced Backtest Route
-# ----------------------------------------------------------------------------
 @app.route('/backtest_advanced')
 def backtest_advanced():
     ticker = request.args.get('ticker')
@@ -1029,85 +1050,111 @@ def backtest_advanced():
         encoded = base64.b64encode(pngImage.getvalue()).decode('ascii')
         plt.close(fig)
 
-        img_html = f'<img src="data:image/png;base64,{encoded}" alt="Backtest Chart"/>'
+        img_html = f'<img src="data:image/png;base64,{encoded}" class="img-fluid" alt="Backtest Chart"/>'
 
         result_html = f"""
-        <p>Final Capital: {metrics['FinalValue']}</p>
-        <p>Percent Return: {metrics['PercentReturn']}</p>
-        <p>Sharpe Ratio: {metrics['SharpeRatio']}</p>
-        <p>Max Drawdown: {metrics['MaxDrawdown']}</p>
+        <p><strong>Final Capital:</strong> {metrics['FinalValue']}</p>
+        <p><strong>Percent Return:</strong> {metrics['PercentReturn']}</p>
+        <p><strong>Sharpe Ratio:</strong> {metrics['SharpeRatio']}</p>
+        <p><strong>Max Drawdown:</strong> {metrics['MaxDrawdown']}</p>
         """
 
+    # Build the re-run form just as before
     tickers = sorted(list_tickers())
     model_names_list = ['LogisticRegression', 'RandomForest', 'MLP']
+    trailing_stop_checked = 'checked' if trailing_stop else ''
 
     re_run_form = f"""
     <hr>
-    <h2>Refine Your Backtest</h2>
-    <form method="GET" action="{url_for('backtest_advanced')}">
-      <label for="ticker">Ticker:</label>
-      <select name="ticker">
-        {"".join(
+    <h3>Refine Your Backtest</h3>
+    <form method="GET" action="{url_for('backtest_advanced')}" class="row g-3 mt-2">
+      <div class="col-md-6">
+        <label for="ticker" class="form-label">Ticker:</label>
+        <select name="ticker" class="form-select">
+          {"".join(
         f'<option value="{t}" {"selected" if t == ticker else ""}>{t}</option>'
         for t in tickers
     )}
-      </select>
-      <br><br>
+        </select>
+      </div>
 
-      <label for="model_name">Model:</label>
-      <select name="model_name">
-        {"".join(
+      <div class="col-md-6">
+        <label for="model_name" class="form-label">Model:</label>
+        <select name="model_name" class="form-select">
+          {"".join(
         f'<option value="{m}" {"selected" if m == model_name else ""}>{m}</option>'
         for m in model_names_list
     )}
-      </select>
-      <br><br>
+        </select>
+      </div>
 
-      <label>Initial Capital:</label>
-      <input type="number" name="initial_capital" value="{initial_capital}" step="100" />
-      <br><br>
+      <div class="col-md-4">
+        <label class="form-label">Initial Capital:</label>
+        <input type="number" name="initial_capital" value="{initial_capital}" step="100" class="form-control"/>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Stop-Loss %:</label>
+        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" class="form-control"/>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Partial Sell Ratio:</label>
+        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" class="form-control"/>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Probability Threshold:</label>
+        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" class="form-control"/>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Take Profit %:</label>
+        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" class="form-control"/>
+      </div>
+      <div class="col-md-4 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="trailing_stop" {trailing_stop_checked} id="trailingStopCheckSingle2">
+          <label class="form-check-label" for="trailingStopCheckSingle2">Trailing Stop?</label>
+        </div>
+      </div>
 
-      <label>Stop-Loss % (e.g., 0.05 = 5%):</label>
-      <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" />
-      <br><br>
-
-      <label>Partial Sell Ratio (e.g., 0.5 = 50%):</label>
-      <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" />
-      <br><br>
-
-      <label>Probability Threshold (0 to 1):</label>
-      <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" />
-      <br><br>
-
-      <label>Trailing Stop?</label>
-      <input type="checkbox" name="trailing_stop" {"checked" if trailing_stop else ""} />
-      <br><br>
-
-      <label>Take Profit % (e.g., 0.2 = 20%):</label>
-      <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" />
-      <br><br>
-
-      <button type="submit">Re-Run Backtest</button>
+      <div class="col-12">
+        <button type="submit" class="btn btn-primary">Re-Run Backtest</button>
+      </div>
     </form>
     """
 
     page_html = f"""
-    <h1>Advanced Backtest Results</h1>
-    <h2>{ticker} - {model_name}</h2>
-    {result_html}
-    {img_html}
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Advanced Backtest Results</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container {{ max-width: 900px; margin-top: 40px; }}
+      </style>
+    </head>
+    <body class="bg-light">
+    <div class="container">
+      <h1>Advanced Backtest Results</h1>
+      <h5>{ticker} - {model_name}</h5>
+      <div class="mt-3">
+        {result_html}
+      </div>
+      <div class="mt-4">
+        {img_html}
+      </div>
 
-    {re_run_form}
+      <div class="mt-5">
+        {re_run_form}
+      </div>
 
-    <hr>
-    <p><a href="{{{{ url_for('select_backtest_advanced') }}}}">Go to Full Advanced Setup Page</a></p>
+      <hr class="my-4">
+      <p><a href="{{{{ url_for('select_backtest_advanced') }}}}" class="btn btn-secondary">Go to Full Advanced Setup Page</a></p>
+    </div>
+    </body>
+    </html>
     """
     return render_template_string(page_html)
 
 
-# ----------------------------------------------------------------------------
-# 6. NEW ROUTE: PREDICT NEXT-DAY O/H/L/C
-# ----------------------------------------------------------------------------
 @app.route('/predict_next_day', methods=['GET', 'POST'])
 def predict_next_day():
     """
@@ -1196,10 +1243,49 @@ def predict_next_day():
     """
     return render_template_string(html, tickers=tickers)
 
-
 ###############################################################################
 # MAIN
 ###############################################################################
+@app.route('/')
+def index():
+    # The main index with bootstrap styling
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Algorithmic Trading App</title>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <style>
+        .container {
+          max-width: 800px; 
+          margin-top: 40px;
+        }
+      </style>
+    </head>
+    <body class="bg-light">
+      <div class="container">
+        <h1 class="mb-4">Welcome to the Advanced Algorithmic Trading App</h1>
+        <ul class="list-group">
+          <li class="list-group-item">
+            <a href="{{ url_for('train') }}" class="btn btn-link">Train Models (SSE Progress)</a>
+          </li>
+          <li class="list-group-item">
+            <a href="{{ url_for('select_backtest_advanced') }}" class="btn btn-link">Run Advanced Backtest (Single Ticker)</a>
+          </li>
+          <li class="list-group-item">
+            <a href="{{ url_for('select_backtest_portfolio') }}" class="btn btn-link">Run Portfolio Backtest (Multiple Tickers)</a>
+          </li>
+          <li class="list-group-item">
+            <a href="{{ url_for('predict_next_day') }}" class="btn btn-link">Predict Next Day O/H/L/C</a>
+          </li>
+        </ul>
+      </div>
+    </body>
+    </html>
+    """
+    return render_template_string(html)
+
+
 if __name__ == '__main__':
     load_models()
     app.run(debug=True)
