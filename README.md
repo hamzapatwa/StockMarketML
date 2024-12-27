@@ -36,8 +36,8 @@ Welcome to the **Advanced Algorithmic Trading App**, a comprehensive tool for tr
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/advanced-algorithmic-trading-app.git
-cd advanced-algorithmic-trading-app
+git clone https://github.com/hamzapatwa/StockMarketML.git
+cd StockMarketML
 ```
 
 ### Create a Virtual Environment
