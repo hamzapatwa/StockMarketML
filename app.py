@@ -9,11 +9,12 @@ import threading
 from flask import Flask, request, render_template_string, redirect, url_for, Response, jsonify
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
 import matplotlib
+
 matplotlib.use('Agg')  # For servers without GUI
 import matplotlib.pyplot as plt
 import io
@@ -38,6 +39,7 @@ progress_data = {
 }
 progress_lock = threading.Lock()
 
+
 ###############################################################################
 # 1. HELPER FUNCTIONS (DATA LOADING, INDICATORS, LABELING)
 ###############################################################################
@@ -56,8 +58,8 @@ def load_data_for_ticker(ticker, hist_folder='hist'):
     # Adjust skiprows if needed based on actual CSV structure
     df = pd.read_csv(file_path, skiprows=[1, 2])
     df.rename(columns={
-        "Price": "Date",    # Some CSVs might have "Price" as date
-        "Datetime": "Date", # If "Datetime" is present, rename to "Date"
+        "Price": "Date",  # Some CSVs might have "Price" as date
+        "Datetime": "Date",  # If "Datetime" is present, rename to "Date"
         "Close": "Close",
         "High": "High",
         "Low": "Low",
@@ -71,7 +73,7 @@ def load_data_for_ticker(ticker, hist_folder='hist'):
 
 
 def compute_indicators(df):
-    """Compute common technical indicators on the DataFrame."""
+    """Compute common and extra technical indicators on the DataFrame."""
     df = df.copy()
     df.sort_index(inplace=True)
 
@@ -79,6 +81,12 @@ def compute_indicators(df):
     df['MA_10'] = df['Close'].rolling(window=10).mean()
     df['MA_50'] = df['Close'].rolling(window=50).mean()
     df['MA_200'] = df['Close'].rolling(window=200).mean()
+
+    # Bollinger Bands (using 20-day window)
+    sma_20 = df['Close'].rolling(window=20).mean()
+    std_20 = df['Close'].rolling(window=20).std()
+    df['Boll_Upper'] = sma_20 + 2 * std_20
+    df['Boll_Lower'] = sma_20 - 2 * std_20
 
     # Daily Returns
     df['Daily_Return'] = df['Close'].pct_change()
@@ -99,13 +107,33 @@ def compute_indicators(df):
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
+    # On-Balance Volume (OBV)
+    df['OBV'] = 0
+    df['OBV'] = np.where(df['Close'] > df['Close'].shift(1),
+                         df['Volume'],
+                         np.where(df['Close'] < df['Close'].shift(1),
+                                  -df['Volume'], 0)).cumsum()
+
+    # Stochastic Oscillator (14-day)
+    window = 14
+    low14 = df['Low'].rolling(window=window).min()
+    high14 = df['High'].rolling(window=window).max()
+    df['Stoch_%K'] = 100 * (df['Close'] - low14) / (high14 - low14 + 1e-9)
+    df['Stoch_%D'] = df['Stoch_%K'].rolling(3).mean()
+
     df.dropna(inplace=True)
     return df
 
 
+def ensemble_predict(rf_model, mlp_model, X_in):
+    p1 = rf_model.predict(X_in)
+    p2 = mlp_model.predict(X_in)
+    return (p1 + p2) / 2.0
+
+
 def create_labels(df, threshold=0.0025):
     """
-    Create multi-class labels:
+    Create multi-class labels for classification:
       2 => BUY, 0 => SELL, 1 => HOLD
       threshold=0.0025 => +/-0.25% for buy/sell triggers
     """
@@ -125,21 +153,33 @@ def create_labels(df, threshold=0.0025):
     print(f"Class distribution for threshold {threshold}:\n{class_counts}")
     return df
 
+
 ###############################################################################
 # 2. MODEL TRAINING / SAVING / LOADING
 ###############################################################################
 def train_models_for_ticker(ticker, df):
     """
-    Train both classification models for BUY/SELL/HOLD actions
-    and regression models for next-day O/H/L/C predictions.
-    Returns (models_dict, scaler) or (None, None) if insufficient classes.
+    Train classification models (buy/sell/hold) and an ensemble regression
+    (next-day O/H/L/C) with:
+      - RandomForestRegressor
+      - MLPRegressor
+    Then we average their predictions for final 'NextOpenReg', 'NextHighReg', etc.
+
+    Also clips extreme target values (±20% from today's Close).
     """
-    # CLASSIFICATION
+    # Feature columns: we've added Bollinger, OBV, Stoch, etc.
     feature_cols = [
         'Close', 'High', 'Low', 'Open', 'Volume',
         'MA_10', 'MA_50', 'MA_200',
-        'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist'
+        'Boll_Upper', 'Boll_Lower',
+        'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
+        'OBV', 'Stoch_%K', 'Stoch_%D'
     ]
+
+    if len(df) < 50:  # Arbitrary small check
+        print(f"Skipping {ticker}: not enough data after extra indicators.")
+        return None, None
+
     X_class = df[feature_cols].values
     y_class = df['Action'].values
 
@@ -148,14 +188,18 @@ def train_models_for_ticker(ticker, df):
         print(f"Skipping ticker {ticker}: only one class present ({unique_classes[0]})")
         return None, None
 
+    # Train/test split
     X_train_c, X_test_c, y_train_c, _ = train_test_split(
         X_class, y_class, test_size=0.2, shuffle=False
     )
 
+    # Normalize/scale
     scaler = StandardScaler()
     X_train_c_scaled = scaler.fit_transform(X_train_c)
 
-    # Classification Models
+    # --------------------------
+    # 1) CLASSIFICATION MODELS
+    # --------------------------
     lr = LogisticRegression(multi_class='multinomial', max_iter=1000)
     lr.fit(X_train_c_scaled, y_train_c)
 
@@ -171,38 +215,67 @@ def train_models_for_ticker(ticker, df):
         'MLP': mlp
     }
 
-    # REGRESSION
+    # --------------------------
+    # 2) REGRESSION MODELS
+    # --------------------------
     df_reg = df.copy()
-    df_reg['Next_Open']  = df_reg['Open'].shift(-1)
-    df_reg['Next_High']  = df_reg['High'].shift(-1)
-    df_reg['Next_Low']   = df_reg['Low'].shift(-1)
+    df_reg['Next_Open'] = df_reg['Open'].shift(-1)
+    df_reg['Next_High'] = df_reg['High'].shift(-1)
+    df_reg['Next_Low'] = df_reg['Low'].shift(-1)
     df_reg['Next_Close'] = df_reg['Close'].shift(-1)
     df_reg.dropna(inplace=True)
 
+    # Clip extreme next-day targets to ±20% from today's close
+    MAX_SHIFT_PCT = 0.2  # 20%
+    for col in ['Next_Open', 'Next_High', 'Next_Low', 'Next_Close']:
+        diff = df_reg[col] - df_reg['Close']
+        pct = diff / (df_reg['Close'] + 1e-9)
+        pct_clipped = pct.clip(lower=-MAX_SHIFT_PCT, upper=MAX_SHIFT_PCT)
+        df_reg[col] = df_reg['Close'] + pct_clipped * df_reg['Close']
+
     X_reg = df_reg[feature_cols].values
-    y_open  = df_reg['Next_Open'].values
-    y_high  = df_reg['Next_High'].values
-    y_low   = df_reg['Next_Low'].values
+    y_open = df_reg['Next_Open'].values
+    y_high = df_reg['Next_High'].values
+    y_low = df_reg['Next_Low'].values
     y_close = df_reg['Next_Close'].values
 
+    # Same # of rows for classification/regression (minus shift).
     X_train_r = X_reg[:len(X_train_c)]
     X_train_r_scaled = scaler.transform(X_train_r)
 
-    open_reg  = RandomForestRegressor(n_estimators=50)
-    high_reg  = RandomForestRegressor(n_estimators=50)
-    low_reg   = RandomForestRegressor(n_estimators=50)
-    close_reg = RandomForestRegressor(n_estimators=50)
+    # We'll do a simple 2-model ensemble for each target:
+    # RandomForestRegressor + MLPRegressor -> average
+    rf_open = RandomForestRegressor(n_estimators=50)
+    mlp_open = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=1000)
 
-    open_reg.fit(X_train_r_scaled,  y_open[:len(X_train_r)])
-    high_reg.fit(X_train_r_scaled,  y_high[:len(X_train_r)])
-    low_reg.fit(X_train_r_scaled,   y_low[:len(X_train_r)])
-    close_reg.fit(X_train_r_scaled, y_close[:len(X_train_r)])
+    rf_high = RandomForestRegressor(n_estimators=50)
+    mlp_high = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=1000)
 
+    rf_low = RandomForestRegressor(n_estimators=50)
+    mlp_low = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=1000)
+
+    rf_close = RandomForestRegressor(n_estimators=50)
+    mlp_close = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=1000)
+
+    # Fit each regressor
+    rf_open.fit(X_train_r_scaled, y_open[:len(X_train_r)])
+    rf_high.fit(X_train_r_scaled, y_high[:len(X_train_r)])
+    rf_low.fit(X_train_r_scaled, y_low[:len(X_train_r)])
+    rf_close.fit(X_train_r_scaled, y_close[:len(X_train_r)])
+
+    mlp_open.fit(X_train_r_scaled, y_open[:len(X_train_r)])
+    mlp_high.fit(X_train_r_scaled, y_high[:len(X_train_r)])
+    mlp_low.fit(X_train_r_scaled, y_low[:len(X_train_r)])
+    mlp_close.fit(X_train_r_scaled, y_close[:len(X_train_r)])
+
+    # Store them individually for optional debugging
+    # but we also provide ensemble predictions as final
+    # We'll just store closures that do an ensemble predict
     regression_models = {
-        'NextOpenReg':  open_reg,
-        'NextHighReg':  high_reg,
-        'NextLowReg':   low_reg,
-        'NextCloseReg': close_reg
+        'NextOpenReg': (rf_open, mlp_open, ensemble_predict),
+        'NextHighReg': (rf_high, mlp_high, ensemble_predict),
+        'NextLowReg': (rf_low, mlp_low, ensemble_predict),
+        'NextCloseReg': (rf_close, mlp_close, ensemble_predict)
     }
 
     all_models = {**classification_models, **regression_models}
@@ -233,7 +306,7 @@ def train_all_tickers_with_progress():
                 SCALERS[ticker] = scaler
                 print(f"Trained models for ticker: {ticker}")
             else:
-                print(f"Skipped training for ticker: {ticker} (insufficient classes).")
+                print(f"Skipped training for ticker: {ticker} (insufficient data or classes).")
 
         except Exception as e:
             print(f"Error training ticker {ticker}: {e}")
@@ -260,8 +333,9 @@ def load_models(filename='models.pkl'):
         with open(filename, 'rb') as f:
             MODELS, SCALERS = pickle.load(f)
 
+
 ###############################################################################
-# 3. BACKTESTING FUNCTIONS
+# 3. BACKTESTING FUNCTIONS (NOW TRACKS TRADE STATS)
 ###############################################################################
 def advanced_backtest(ticker, model_name,
                       initial_capital=10000,
@@ -272,8 +346,14 @@ def advanced_backtest(ticker, model_name,
                       take_profit_percent=0.2):
     """
     Naive minute-based backtest for a single ticker.
-    Return final portfolio stats and daily portfolio values.
+    Returns:
+      final_val,
+      final_ret_str,
+      daily_dates,
+      daily_values,
+      metrics (incl. #trades, wins, losses, maintains, win rate).
     """
+
     if ticker not in MODELS or ticker not in SCALERS:
         return None, "No models found for this ticker.", None, None, {}
 
@@ -285,15 +365,21 @@ def advanced_backtest(ticker, model_name,
     df = create_labels(df)
 
     classifier = MODELS[ticker][model_name]
+    # This must match the updated feature_cols in train_models_for_ticker
     feature_cols = [
         'Close', 'High', 'Low', 'Open', 'Volume',
         'MA_10', 'MA_50', 'MA_200',
-        'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist'
+        'Boll_Upper', 'Boll_Lower',
+        'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
+        'OBV', 'Stoch_%K', 'Stoch_%D'
     ]
+    if any(col not in df.columns for col in feature_cols):
+        return None, "Data missing some indicators for this ticker.", None, None, {}
+
     X = df[feature_cols].values
     X_scaled = SCALERS[ticker].transform(X)
 
-    # Predictions
+    # Classification predictions
     has_proba = hasattr(classifier, "predict_proba")
     if has_proba:
         probas = classifier.predict_proba(X_scaled)
@@ -305,10 +391,17 @@ def advanced_backtest(ticker, model_name,
     df['Prediction'] = np.roll(predicted_actions, 1, axis=0)
     shifted_probas = np.roll(probas, 1, axis=0) if probas is not None else None
 
+    # Tracking
     positions = []
     capital = float(initial_capital)
     daily_values = []
     daily_dates = []
+
+    # For trade stats
+    total_trades = 0
+    wins = 0
+    losses = 0
+    maintains = 0
 
     for i, (idx, row) in enumerate(df.iterrows()):
         current_price = row['Close']
@@ -332,20 +425,57 @@ def advanced_backtest(ticker, model_name,
         # Manage Positions
         updated_positions = []
         for pos in positions:
+            was_sold = False
+            sell_price_for_this_pos = current_price
+
             # If triggered stop-loss
             if current_price <= pos['stop_loss_price']:
-                capital += pos['shares'] * current_price
+                shares_sold = pos['shares']
+                cost_basis = pos['entry_price']
+                capital += shares_sold * current_price
+                total_trades += 1
+
+                # Evaluate trade result
+                pct_change = (current_price - cost_basis) / cost_basis
+                if pct_change > 0.005:
+                    wins += 1
+                elif pct_change < -0.005:
+                    losses += 1
+                else:
+                    maintains += 1
+
+                was_sold = True
+
             # If triggered take-profit
             elif (take_profit_percent > 0.0 and
                   current_price >= pos['entry_price'] * (1 + take_profit_percent)):
                 shares_to_sell = int(pos['shares'] * partial_sell_ratio)
                 if shares_to_sell > 0:
+                    # Partial or full?
+                    ratio = shares_to_sell / pos['shares']
+                    partial_cost_basis = pos['entry_price']  # same basis
                     capital += shares_to_sell * current_price
                     pos['shares'] -= shares_to_sell
+                    total_trades += 1
+
+                    pct_change = (current_price - partial_cost_basis) / partial_cost_basis
+                    if pct_change > 0.005:
+                        wins += 1
+                    elif pct_change < -0.005:
+                        losses += 1
+                    else:
+                        maintains += 1
+
                 if pos['shares'] > 0:
                     updated_positions.append(pos)
+                was_sold = True  # at least partial
+
+            # else keep the position
             else:
                 updated_positions.append(pos)
+
+            # If sold everything, we skip re-adding
+            # If partial, we re-add the position above
 
         positions = updated_positions
 
@@ -368,15 +498,38 @@ def advanced_backtest(ticker, model_name,
             for pos in positions:
                 shares_to_sell = int(pos['shares'] * partial_sell_ratio)
                 if shares_to_sell > 0:
+                    ratio = shares_to_sell / pos['shares']
+                    cost_basis = pos['entry_price']
                     capital += shares_to_sell * current_price
                     pos['shares'] -= shares_to_sell
+                    total_trades += 1
+
+                    pct_change = (current_price - cost_basis) / cost_basis
+                    if pct_change > 0.005:
+                        wins += 1
+                    elif pct_change < -0.005:
+                        losses += 1
+                    else:
+                        maintains += 1
+
             positions = [p for p in positions if p['shares'] > 0]
 
     # Final liquidation
     if positions:
         last_price = df.iloc[-1]['Close']
         for pos in positions:
-            capital += pos['shares'] * last_price
+            shares_sold = pos['shares']
+            cost_basis = pos['entry_price']
+            capital += shares_sold * last_price
+            total_trades += 1
+
+            pct_change = (last_price - cost_basis) / cost_basis
+            if pct_change > 0.005:
+                wins += 1
+            elif pct_change < -0.005:
+                losses += 1
+            else:
+                maintains += 1
 
     final_val = capital
     final_ret = (final_val - initial_capital) / initial_capital * 100.0
@@ -407,11 +560,23 @@ def advanced_backtest(ticker, model_name,
     max_drawdown = min(drawdowns)
     max_drawdown_str = f"{max_drawdown * 100:.2f}%"
 
+    # Calculate Win Rate
+    if total_trades > 0:
+        win_rate = (wins / total_trades) * 100.0
+        win_rate_str = f"{win_rate:.2f}%"
+    else:
+        win_rate_str = "N/A"
+
     metrics = {
         'FinalValue': f"{final_val:.2f}",
         'PercentReturn': final_ret_str,
         'SharpeRatio': f"{sharpe:.3f}",
-        'MaxDrawdown': max_drawdown_str
+        'MaxDrawdown': max_drawdown_str,
+        'NumTrades': total_trades,
+        'Wins': wins,
+        'Losses': losses,
+        'Maintains': maintains,
+        'WinRate': win_rate_str  # Added Win Rate
     }
     return final_val, final_ret_str, daily_dates, daily_values, metrics
 
@@ -426,16 +591,22 @@ def advanced_backtest_portfolio(tickers, model_name,
     """
     Perform a naive minute-based backtest on multiple tickers by
     splitting capital equally among them and summing results.
+    We'll sum up all trades/wins/losses/maintains across tickers.
     """
     if not tickers:
         return None, "No tickers selected!", [], [], {}
 
     n = len(tickers)
     capital_each = initial_capital / n
+
     ticker_values = {}
+    total_trades = 0
+    wins = 0
+    losses = 0
+    maintains = 0
 
     for t in tickers:
-        final_val, ret_str, dates, vals, _ = advanced_backtest(
+        final_val, ret_str, dates, vals, m = advanced_backtest(
             t, model_name,
             initial_capital=capital_each,
             stop_loss_percent=stop_loss_percent,
@@ -447,6 +618,12 @@ def advanced_backtest_portfolio(tickers, model_name,
         if final_val is None:
             print(f"Skipping {t} due to error: {ret_str}")
             continue
+
+        # Merge stats
+        total_trades += m.get('NumTrades', 0)
+        wins += m.get('Wins', 0)
+        losses += m.get('Losses', 0)
+        maintains += m.get('Maintains', 0)
 
         df_vals = pd.DataFrame({'Date': dates, 'Value': vals}).set_index('Date')
         ticker_values[t] = df_vals
@@ -479,7 +656,12 @@ def advanced_backtest_portfolio(tickers, model_name,
             'FinalValue': f"{final_val:.2f}",
             'PercentReturn': final_ret_str,
             'SharpeRatio': "N/A",
-            'MaxDrawdown': "N/A"
+            'MaxDrawdown': "N/A",
+            'NumTrades': total_trades,
+            'Wins': wins,
+            'Losses': losses,
+            'Maintains': maintains,
+            'WinRate': "N/A" if total_trades == 0 else f"{(wins / total_trades) * 100:.2f}%"
         }
         return final_val, final_ret_str, daily_dates, daily_vals, metrics
 
@@ -505,13 +687,26 @@ def advanced_backtest_portfolio(tickers, model_name,
     max_drawdown = min(drawdowns)
     max_drawdown_str = f"{max_drawdown * 100:.2f}%"
 
+    # Calculate Win Rate
+    if total_trades > 0:
+        win_rate = (wins / total_trades) * 100.0
+        win_rate_str = f"{win_rate:.2f}%"
+    else:
+        win_rate_str = "N/A"
+
     metrics = {
         'FinalValue': f"{final_val:.2f}",
         'PercentReturn': final_ret_str,
         'SharpeRatio': f"{sharpe:.3f}",
-        'MaxDrawdown': max_drawdown_str
+        'MaxDrawdown': max_drawdown_str,
+        'NumTrades': total_trades,
+        'Wins': wins,
+        'Losses': losses,
+        'Maintains': maintains,
+        'WinRate': win_rate_str  # Added Win Rate
     }
     return final_val, final_ret_str, daily_dates, daily_vals, metrics
+
 
 ###############################################################################
 # 4. HELPER FUNCTIONS FOR PLOTTING & RENDERING
@@ -558,6 +753,7 @@ def render_bootstrap_page(title, body_html):
     """
     return html_template
 
+
 ###############################################################################
 # 5. FLASK ROUTES
 ###############################################################################
@@ -594,55 +790,64 @@ def train():
     """
     body_html = """
     <h1 class="text-xl font-bold mt-2 mb-4">Train Models for All Tickers</h1>
-    <p class="mb-2">Click the button below to start training models.</p>
-    <button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700" onclick="startTraining()">Start Training</button>
+<p class="mb-2">Click the button below to start training models.</p>
+<button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700" onclick="startTraining()">Start Training</button>
 
-    <div id="status" class="mt-3 text-sm font-medium text-gray-700"></div>
-    <div class="w-72 bg-gray-300 h-4 rounded mt-4 overflow-hidden">
-      <div id="progressbar" class="bg-green-500 h-4" style="width:0%;"></div>
-    </div>
-    <p class="mt-6">
-      <a href="{{ url_for('index') }}" class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">Back to Home</a>
-    </p>
+<div id="status" class="mt-3 text-sm font-medium text-gray-700"></div>
 
-    <script>
-      const statusDiv = document.getElementById('status');
-      const progressBar = document.getElementById('progressbar');
+<!-- Updated Progress Bar with Percentage Outside -->
+<div class="flex items-center mt-4">
+  <!-- Progress Bar Container -->
+  <div class="w-72 bg-gray-300 h-6 rounded overflow-hidden">
+    <div id="progressbar" class="bg-green-500 h-6 transition-width duration-300" style="width:0%;"></div>
+  </div>
 
-      function startTraining(){
-        fetch('{{ url_for("start_training") }}')
-          .then(response => response.json())
-          .then(data => {
-            if(data.status === 'ok'){
-              statusDiv.innerHTML = "Training started...";
-              listenForProgress();
-            } else {
-              statusDiv.innerHTML = "Error or already training!";
-            }
-          });
+  <!-- Percentage Indicator -->
+  <span id="progresspercent" class="ml-4 text-sm font-medium">0.0%</span>
+</div>
+
+<p class="mt-6">
+  <a href="{{ url_for('index') }}" class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">Back to Home</a>
+</p>
+
+<script>
+  const statusDiv = document.getElementById('status');
+  const progressBar = document.getElementById('progressbar');
+
+  function startTraining(){
+    fetch('{{ url_for("start_training") }}')
+      .then(response => response.json())
+      .then(data => {
+        if(data.status === 'ok'){
+          statusDiv.innerHTML = "Training started...";
+          listenForProgress();
+        } else {
+          statusDiv.innerHTML = "Error or already training!";
+        }
+      });
+  }
+
+  function listenForProgress(){
+    const evtSource = new EventSource('{{ url_for("train_progress") }}');
+    evtSource.onmessage = function(e) {
+      let [current, total, status] = e.data.split(",");
+      if(status === 'training'){
+        let pct = 0;
+        if(total > 0){
+          pct = (current / total) * 100;
+        }
+        progressBar.style.width = pct + "%";
+        document.getElementById('progresspercent').innerText = pct.toFixed(1) + "%";
+        statusDiv.innerHTML = "Training in progress... " + current + "/" + total;
+      } else if(status === 'done'){
+        progressBar.style.width = "100%";
+        document.getElementById('progresspercent').innerText = "100.0%";
+        statusDiv.innerHTML = "Training complete!";
+        evtSource.close();
       }
-
-      function listenForProgress(){
-        const evtSource = new EventSource('{{ url_for("train_progress") }}');
-        evtSource.onmessage = function(e) {
-          let [current, total, status] = e.data.split(",");
-          if(status === 'training'){
-            let pct = 0;
-            if(total > 0){
-              pct = (current / total) * 100;
-            }
-            progressBar.style.width = pct + "%";
-            progressBar.innerHTML = Math.floor(pct) + "%";
-            statusDiv.innerHTML = "Training in progress... " + current + "/" + total;
-          } else if(status === 'done'){
-            progressBar.style.width = "100%";
-            progressBar.innerHTML = "100%";
-            statusDiv.innerHTML = "Training complete!";
-            evtSource.close();
-          }
-        };
-      }
-    </script>
+    };
+  }
+</script>
     """
     return render_template_string(render_bootstrap_page("Train Models", body_html))
 
@@ -666,6 +871,7 @@ def train_progress():
     """
     SSE endpoint: yields lines in format "data: current,total,status\n\n"
     """
+
     def generate():
         while True:
             time.sleep(0.3)
@@ -800,11 +1006,21 @@ def backtest_advanced():
     # Plot
     encoded_img = plot_portfolio(daily_dates, daily_values, f"{ticker} - {model_name}")
 
+    # Include trade stats in results
+    trade_stats_html = f"""
+    <p><strong>Number of Trades:</strong> {metrics.get('NumTrades', 0)}</p>
+    <p><strong>Wins:</strong> {metrics.get('Wins', 0)}</p>
+    <p><strong>Losses:</strong> {metrics.get('Losses', 0)}</p>
+    <p><strong>Maintains:</strong> {metrics.get('Maintains', 0)}</p>
+    <p><strong>Win Rate:</strong> {metrics.get('WinRate', 'N/A')}</p>
+    """
+
     result_html = f"""
     <p><strong>Final Capital:</strong> {metrics['FinalValue']}</p>
     <p><strong>Percent Return:</strong> {metrics['PercentReturn']}</p>
     <p><strong>Sharpe Ratio:</strong> {metrics['SharpeRatio']}</p>
     <p><strong>Max Drawdown:</strong> {metrics['MaxDrawdown']}</p>
+    {trade_stats_html}
     """
 
     # Re-run form
@@ -825,8 +1041,8 @@ def backtest_advanced():
       <div>
         <label class="block mb-1 font-medium">Model:</label>
         <select name="model_name" class="w-full border border-gray-300 rounded px-2 py-1">
-          {"".join(f'<option value="{m}" {"selected" if m == model_name else ""}>{m}</option>' 
-                  for m in model_names_list)}
+          {"".join(f'<option value="{m}" {"selected" if m == model_name else ""}>{m}</option>'
+                   for m in model_names_list)}
         </select>
       </div>
       <div>
@@ -1157,11 +1373,21 @@ def backtest_portfolio():
     encoded_img = plot_portfolio(daily_dates, daily_values,
                                  f"{', '.join(selected_tickers)} - {model_name}")
 
+    # Include trade stats in results
+    trade_stats_html = f"""
+    <p><strong>Number of Trades:</strong> {metrics.get('NumTrades', 0)}</p>
+    <p><strong>Wins:</strong> {metrics.get('Wins', 0)}</p>
+    <p><strong>Losses:</strong> {metrics.get('Losses', 0)}</p>
+    <p><strong>Maintains:</strong> {metrics.get('Maintains', 0)}</p>
+    <p><strong>Win Rate:</strong> {metrics.get('WinRate', 'N/A')}</p>
+    """
+
     result_html = f"""
     <p><strong>Final Capital:</strong> {metrics['FinalValue']}</p>
     <p><strong>Percent Return:</strong> {metrics['PercentReturn']}</p>
     <p><strong>Sharpe Ratio:</strong> {metrics['SharpeRatio']}</p>
     <p><strong>Max Drawdown:</strong> {metrics['MaxDrawdown']}</p>
+    {trade_stats_html}
     """
 
     trailing_check = 'checked' if trailing_stop else ''
@@ -1246,98 +1472,153 @@ def backtest_portfolio():
 @app.route('/predict_next_day', methods=['GET', 'POST'])
 def predict_next_day():
     """
-    Lets user pick a ticker, then predict tomorrow's O/H/L/C using the regression models.
+    Lets user pick a ticker, then predict tomorrow's O/H/L/C using the ensemble regression models.
     """
     tickers = list_tickers()
 
     if request.method == 'POST':
         ticker = request.form.get('ticker')
         if ticker not in MODELS:
-            return render_template_string("<p class='text-red-600'>Error: No model for this ticker. Please train first.</p>")
+            body_html = "<p class='text-red-600'>Error: No model for this ticker. Please train first.</p>"
+            return render_template_string(render_bootstrap_page("Prediction Error", body_html))
 
-        df = load_data_for_ticker(ticker)
-        df = compute_indicators(df)
-        if df.empty:
-            return render_template_string("<p class='text-red-600'>Error: No data available.</p>")
+        try:
+            df = load_data_for_ticker(ticker)
+            df = compute_indicators(df)
+            if df.empty:
+                body_html = "<p class='text-red-600'>Error: No data available.</p>"
+                return render_template_string(render_bootstrap_page("Prediction Error", body_html))
 
-        last_row = df.iloc[[-1]].copy()
-        last_row.dropna(inplace=True)
-        if last_row.empty:
-            return render_template_string("<p class='text-red-600'>Error: Not enough data to predict.</p>")
+            last_row = df.iloc[[-1]].copy()
+            last_row.dropna(inplace=True)
+            if last_row.empty:
+                body_html = "<p class='text-red-600'>Error: Not enough data to predict.</p>"
+                return render_template_string(render_bootstrap_page("Prediction Error", body_html))
 
-        feature_cols = [
-            'Close','High','Low','Open','Volume',
-            'MA_10','MA_50','MA_200',
-            'Daily_Return','RSI_14','MACD','MACD_Signal','MACD_Hist'
-        ]
-        X_last = last_row[feature_cols].values
-        scaler = SCALERS[ticker]
-        X_last_scaled = scaler.transform(X_last)
+            # Must match the updated feature_cols
+            feature_cols = [
+                'Close', 'High', 'Low', 'Open', 'Volume',
+                'MA_10', 'MA_50', 'MA_200',
+                'Boll_Upper', 'Boll_Lower',
+                'Daily_Return', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
+                'OBV', 'Stoch_%K', 'Stoch_%D'
+            ]
+            for col in feature_cols:
+                if col not in last_row.columns:
+                    body_html = "<p class='text-red-600'>Error: Missing indicator columns. Please re-train.</p>"
+                    return render_template_string(render_bootstrap_page("Prediction Error", body_html))
 
-        all_models = MODELS[ticker]
-        open_reg  = all_models['NextOpenReg']
-        high_reg  = all_models['NextHighReg']
-        low_reg   = all_models['NextLowReg']
-        close_reg = all_models['NextCloseReg']
+            X_last = last_row[feature_cols].values
+            scaler = SCALERS[ticker]
+            X_last_scaled = scaler.transform(X_last)
 
-        pred_open  = open_reg.predict(X_last_scaled)[0]
-        pred_high  = high_reg.predict(X_last_scaled)[0]
-        pred_low   = low_reg.predict(X_last_scaled)[0]
-        pred_close = close_reg.predict(X_last_scaled)[0]
+            all_models = MODELS[ticker]
 
-        current_close = last_row['Close'].values[0]
-        pct_diff = (pred_close - current_close) / current_close * 100.0
+            # Each reg key = (rf_model, mlp_model)
+            open_reg = all_models['NextOpenReg']
+            high_reg = all_models['NextHighReg']
+            low_reg = all_models['NextLowReg']
+            close_reg = all_models['NextCloseReg']
 
-        if pct_diff > 2.0:
-            suggestion = "BUY (Predicted close is 2%+ above current)"
-        elif pct_diff < -2.0:
-            suggestion = "SELL (Predicted close is 2%+ below current)"
-        else:
-            suggestion = "HOLD (Predicted move is within ±2%)"
+            # Correctly unpack and pass arguments to ensemble_predict
+            pred_open = ensemble_predict(open_reg[0], open_reg[1], X_last_scaled)[0]
+            pred_high = ensemble_predict(high_reg[0], high_reg[1], X_last_scaled)[0]
+            pred_low = ensemble_predict(low_reg[0], low_reg[1], X_last_scaled)[0]
+            pred_close = ensemble_predict(close_reg[0], close_reg[1], X_last_scaled)[0]
 
-        result_html = f"""
-        <h3 class="text-lg font-bold mb-2">Predictions for Ticker: {ticker}</h3>
-        <p>Tomorrow's Predicted OPEN:  {pred_open:.2f}</p>
-        <p>Tomorrow's Predicted HIGH:  {pred_high:.2f}</p>
-        <p>Tomorrow's Predicted LOW:   {pred_low:.2f}</p>
-        <p>Tomorrow's Predicted CLOSE: {pred_close:.2f}</p>
-        <p>Current Close: {current_close:.2f}</p>
-        <p>Predicted % Diff vs Current Close: {pct_diff:.2f}%</p>
-        <h4 class="text-md font-semibold mt-3">Suggested Action: {suggestion}</h4>
-        <p class="mt-4">
-          <a href='{url_for('predict_next_day')}'
-             class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
-             Back to Predict Page
-          </a>
-        </p>
-        """
-        return render_template_string(result_html)
+            current_close = last_row['Close'].values[0]
 
-    # GET => minimal form
+            # Additional clamp for sanity-check:
+            MAX_GAP_PERCENT = 0.2  # 20%
+
+            # for each predicted price, don't deviate more than ±20% from current close
+            def clamp_price(pred):
+                diff = pred - current_close
+                pct = diff / (current_close + 1e-9)
+                if pct > MAX_GAP_PERCENT:
+                    pred = current_close * (1 + MAX_GAP_PERCENT)
+                elif pct < -MAX_GAP_PERCENT:
+                    pred = current_close * (1 - MAX_GAP_PERCENT)
+                return pred
+
+            pred_open = clamp_price(pred_open)
+            pred_high = clamp_price(pred_high)
+            pred_low = clamp_price(pred_low)
+            pred_close = clamp_price(pred_close)
+
+            pct_diff = (pred_close - current_close) / current_close * 100.0
+
+            if pct_diff > 2.0:
+                suggestion = "BUY (Predicted close is 2%+ above current)"
+            elif pct_diff < -2.0:
+                suggestion = "SELL (Predicted close is 2%+ below current)"
+            else:
+                suggestion = "HOLD (Predicted move is within ±2%)"
+
+            # Styled Result HTML
+            result_html = f"""
+            <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+                <h3 class="text-2xl font-bold mb-4">Predictions for Ticker: {ticker}</h3>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <p><strong>Tomorrow's Predicted OPEN:</strong> {pred_open:.2f}</p>
+                        <p><strong>Tomorrow's Predicted HIGH:</strong> {pred_high:.2f}</p>
+                        <p><strong>Tomorrow's Predicted LOW:</strong> {pred_low:.2f}</p>
+                        <p><strong>Tomorrow's Predicted CLOSE:</strong> {pred_close:.2f}</p>
+                    </div>
+                    <div>
+                        <p><strong>Current Close:</strong> {current_close:.2f}</p>
+                        <p><strong>Predicted % Diff vs Current Close:</strong> {pct_diff:.2f}%</p>
+                        <p><strong>Suggested Action:</strong> {suggestion}</p>
+                    </div>
+                </div>
+                <div class="mt-6">
+                    <a href='{url_for('predict_next_day')}' class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                        Back to Predict Page
+                    </a>
+                </div>
+            </div>
+            """
+
+            # Wrap the result_html within the Tailwind-styled page
+            full_body_html = f"""
+            <h1 class="text-2xl font-bold mb-6">Prediction Results</h1>
+            {result_html}
+            """
+
+            return render_template_string(render_bootstrap_page("Prediction Results", full_body_html))
+
+        except Exception as e:
+            body_html = f"<p class='text-red-600'>Error during prediction: {str(e)}</p>"
+            return render_template_string(render_bootstrap_page("Prediction Error", body_html))
+
+    # GET method remains unchanged
     form_html = """
     <h1 class="text-xl font-bold mb-4">Predict Next Day O/H/L/C</h1>
-    <form method="POST" class="mb-6">
-      <label class="block mb-1 font-medium">Ticker:</label>
-      <select name="ticker" class="border border-gray-300 rounded px-2 py-1">
-        {% for t in tickers %}
-        <option value="{{t}}">{{t}}</option>
-        {% endfor %}
-      </select>
-      <br><br>
-      <button type="submit"
-              class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-        Predict Next Day
-      </button>
+    <form method="POST" class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+      <div class="mb-4">
+        <label class="block text-gray-700 text-sm font-bold mb-2" for="ticker">
+          Ticker:
+        </label>
+        <select name="ticker" class="shadow appearance-1 border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+          {% for t in tickers %}
+          <option value="{{t}}">{{t}}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="flex items-center justify-between">
+        <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+          Predict Next Day
+        </button>
+        <a href="{{ url_for('index') }}" class="inline-block align-baseline font-bold text-sm text-blue-500 hover:text-blue-800">
+          Back to Home
+        </a>
+      </div>
     </form>
-    <p>
-      <a href="{{ url_for('index') }}"
-         class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
-         Back to Home
-      </a>
-    </p>
     """
     return render_template_string(render_bootstrap_page("Predict Next Day O/H/L/C", form_html),
                                   tickers=tickers)
+
 
 ###############################################################################
 # MAIN ENTRY
