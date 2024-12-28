@@ -183,7 +183,7 @@ Below are some placeholders where you can insert screenshots of your application
    ![Portfolio Backtest Results Screenshot](./screenshots/portfolioresults.png)
 
 7. **Predict Next Day Page**  
-   ![Predict Next Day Screenshot](./screenshots/predict_next_day.png)
+   ![Predict Next Day Screenshot](./screenshots/predictions.png)
 
 ---
 
