@@ -597,8 +597,9 @@ def train_progress():
 @app.route('/select_backtest_portfolio', methods=['GET', 'POST'])
 def select_backtest_portfolio():
     """
-    Displays a more user-friendly form for picking multiple tickers,
-    plus model/capital parameters.
+    Displays a user-friendly form for selecting multiple tickers,
+    with options to add, remove, and select all tickers,
+    along with model and capital parameters.
     """
     tickers = sorted(list_tickers())
     model_names = ['LogisticRegression', 'RandomForest', 'MLP']
@@ -636,13 +637,14 @@ def select_backtest_portfolio():
       <style>
         .container { max-width: 900px; margin-top: 40px; }
         .ticker-box { min-width: 180px; }
+        .button-group { margin-top: 10px; }
       </style>
     </head>
     <body class="bg-light">
     <div class="container">
       <h1 class="mb-4">Portfolio Backtesting Setup</h1>
       <p>Type or search a ticker below and click "Add" to move it to your selected list. 
-         Then "Remove" to remove from your list if needed.</p>
+         Click "Select All" to add all tickers at once. Then "Remove" to remove from your list if needed.</p>
 
       <div class="row mb-3">
         <div class="col-12 col-md-6 mb-2">
@@ -660,8 +662,10 @@ def select_backtest_portfolio():
             <option value="{{t}}">{{t}}</option>
             {% endfor %}
           </select>
-          <br>
-          <button type="button" class="btn btn-sm btn-primary" onclick="addTicker()">Add &raquo;</button>
+          <div class="button-group">
+            <button type="button" class="btn btn-sm btn-primary" onclick="addTicker()">Add &raquo;</button>
+            <button type="button" class="btn btn-sm btn-success" onclick="selectAllTickers()">Select All</button>
+          </div>
         </div>
 
         <div class="col-12 col-md-5">
@@ -732,10 +736,42 @@ def select_backtest_portfolio():
         const selectedList = document.getElementById('selected_tickers_list');
         if(allList.selectedIndex >= 0){
           let opt = allList.options[allList.selectedIndex];
-          let newOpt = document.createElement('option');
-          newOpt.value = opt.value;
-          newOpt.text = opt.text;
-          selectedList.add(newOpt);
+          // Check for duplicates
+          let exists = false;
+          for(let i=0; i < selectedList.options.length; i++){
+            if(selectedList.options[i].value === opt.value){
+              exists = true;
+              break;
+            }
+          }
+          if(!exists){
+            let newOpt = document.createElement('option');
+            newOpt.value = opt.value;
+            newOpt.text = opt.text;
+            selectedList.add(newOpt);
+          }
+        }
+      }
+
+      function selectAllTickers(){
+        const allList = document.getElementById('all_tickers');
+        const selectedList = document.getElementById('selected_tickers_list');
+        for(let i=0; i < allList.options.length; i++){
+          let opt = allList.options[i];
+          // Check for duplicates
+          let exists = false;
+          for(let j=0; j < selectedList.options.length; j++){
+            if(selectedList.options[j].value === opt.value){
+              exists = true;
+              break;
+            }
+          }
+          if(!exists){
+            let newOpt = document.createElement('option');
+            newOpt.value = opt.value;
+            newOpt.text = opt.text;
+            selectedList.add(newOpt);
+          }
         }
       }
 
