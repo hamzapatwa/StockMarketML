@@ -65,9 +65,9 @@ pip install flask pandas numpy scikit-learn matplotlib
 
 Ensure you have a `hist/` directory in the project root containing CSV files for each ticker. Each CSV should include columns like `Date`, `Open`, `High`, `Low`, `Close`, and `Volume`.
 
-This repo will already have folder full of information, but it may not be up to date.
+This repo will already have a folder full of information, but it may not be up to date.
 
-The 'download-nasdaq-historical-data.ipynb' has instructios on how to download the history of your chosen symbols. By deafult, this repo comes with information up until 12/27/2024 for the current SP500 companies.
+The 'download-nasdaq-historical-data.ipynb' has instructions on how to download the history of your chosen symbols. By deafult, this repo comes with information up to 12/27/2024 for the SP500 companies as of that date.
 
 Example structure:
 
