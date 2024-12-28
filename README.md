@@ -162,8 +162,6 @@ Each parameter interacts with the algorithm’s risk profile, trade frequency, a
 
 ## Screenshots
 
-Below are some placeholders where you can insert screenshots of your application in action. Replace these references with actual image paths or embed from your repo:
-
 1. **Main Index Page**  
    ![Main Index Screenshot](./screenshots/homepage.png)
 
