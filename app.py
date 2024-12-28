@@ -537,23 +537,20 @@ def plot_portfolio(daily_dates, daily_values, title):
 
 def render_bootstrap_page(title, body_html):
     """
-    Generate a simple Bootstrap HTML page with a given title and body content.
+    Generate a Tailwind-based HTML page with a given title and body content.
+    (We keep the function name for minimal code changes, but inside we switch to Tailwind.)
     """
     html_template = f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <title>{title}</title>
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-      <style>
-        .container {{
-          max-width: 900px;
-          margin-top: 40px;
-        }}
-      </style>
+      <!-- Tailwind CSS -->
+      <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
-    <body class="bg-light">
-      <div class="container">
+    <body class="bg-gray-100 text-gray-800">
+      <div class="max-w-3xl mx-auto px-4 py-6">
         {body_html}
       </div>
     </body>
@@ -568,22 +565,22 @@ def render_bootstrap_page(title, body_html):
 @app.route('/')
 def index():
     """
-    Main index with Bootstrap styling.
+    Main index with Tailwind styling.
     """
     body_html = """
-    <h1 class="mb-4">Welcome to the Advanced Algorithmic Trading App</h1>
-    <ul class="list-group">
-      <li class="list-group-item">
-        <a href="{{ url_for('train') }}" class="btn btn-link">Train Models (SSE Progress)</a>
+    <h1 class="text-2xl font-bold mb-4">Welcome to the Advanced Algorithmic Trading App</h1>
+    <ul class="divide-y border border-gray-200 rounded">
+      <li class="p-3">
+        <a href="{{ url_for('train') }}" class="text-blue-600 hover:underline">Train Models (SSE Progress)</a>
       </li>
-      <li class="list-group-item">
-        <a href="{{ url_for('select_backtest_advanced') }}" class="btn btn-link">Run Advanced Backtest (Single Ticker)</a>
+      <li class="p-3">
+        <a href="{{ url_for('select_backtest_advanced') }}" class="text-blue-600 hover:underline">Run Advanced Backtest (Single Ticker)</a>
       </li>
-      <li class="list-group-item">
-        <a href="{{ url_for('select_backtest_portfolio') }}" class="btn btn-link">Run Portfolio Backtest (Multiple Tickers)</a>
+      <li class="p-3">
+        <a href="{{ url_for('select_backtest_portfolio') }}" class="text-blue-600 hover:underline">Run Portfolio Backtest (Multiple Tickers)</a>
       </li>
-      <li class="list-group-item">
-        <a href="{{ url_for('predict_next_day') }}" class="btn btn-link">Predict Next Day O/H/L/C</a>
+      <li class="p-3">
+        <a href="{{ url_for('predict_next_day') }}" class="text-blue-600 hover:underline">Predict Next Day O/H/L/C</a>
       </li>
     </ul>
     """
@@ -593,19 +590,20 @@ def index():
 @app.route('/train')
 def train():
     """
-    SSE Training page, now injected into a Bootstrap template.
+    SSE Training page with Tailwind-based layout.
     """
     body_html = """
-    <h1 class="mt-4 mb-3">Train Models for All Tickers</h1>
-    <p>Click the button below to start training models.</p>
-    <button class="btn btn-primary" onclick="startTraining()">Start Training</button>
+    <h1 class="text-xl font-bold mt-2 mb-4">Train Models for All Tickers</h1>
+    <p class="mb-2">Click the button below to start training models.</p>
+    <button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700" onclick="startTraining()">Start Training</button>
 
-    <div id="status" class="mt-3"></div>
-    <div class="progress" style="width:300px; background:#ccc; margin-top:15px;">
-      <div id="progressbar" class="progress-bar bg-success" role="progressbar" style="width:0%;">
-      </div>
+    <div id="status" class="mt-3 text-sm font-medium text-gray-700"></div>
+    <div class="w-72 bg-gray-300 h-4 rounded mt-4 overflow-hidden">
+      <div id="progressbar" class="bg-green-500 h-4" style="width:0%;"></div>
     </div>
-    <p class="mt-3"><a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a></p>
+    <p class="mt-6">
+      <a href="{{ url_for('index') }}" class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">Back to Home</a>
+    </p>
 
     <script>
       const statusDiv = document.getElementById('status');
@@ -713,55 +711,62 @@ def select_backtest_advanced():
 
     # GET => Render the form
     form_html = """
-    <h1>Advanced Backtesting Setup</h1>
-    <form method="POST" class="row g-3">
-      <div class="col-md-6">
-        <label class="form-label">Ticker:</label>
-        <select name="ticker" class="form-select">
+    <h1 class="text-xl font-bold mb-4">Advanced Backtesting Setup</h1>
+    <form method="POST" class="grid gap-4 sm:grid-cols-2">
+      <div>
+        <label class="block mb-1 font-medium">Ticker:</label>
+        <select name="ticker" class="w-full border border-gray-300 rounded px-2 py-1">
           {% for t in tickers %}
           <option value="{{t}}">{{t}}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="col-md-6">
-        <label class="form-label">Model:</label>
-        <select name="model_name" class="form-select">
+      <div>
+        <label class="block mb-1 font-medium">Model:</label>
+        <select name="model_name" class="w-full border border-gray-300 rounded px-2 py-1">
           {% for m in model_names %}
           <option value="{{m}}">{{m}}</option>
           {% endfor %}
         </select>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Initial Capital:</label>
-        <input type="number" name="initial_capital" value="10000" step="100" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Initial Capital:</label>
+        <input type="number" name="initial_capital" value="10000" step="100"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Stop-Loss %:</label>
-        <input type="number" name="stop_loss_percent" value="0.05" step="0.01" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Stop-Loss %:</label>
+        <input type="number" name="stop_loss_percent" value="0.05" step="0.01"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Partial Sell Ratio:</label>
-        <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Partial Sell Ratio:</label>
+        <input type="number" name="partial_sell_ratio" value="0.5" step="0.1"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Probability Threshold (0~1):</label>
-        <input type="number" name="prob_threshold" value="0.6" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Probability Threshold (0~1):</label>
+        <input type="number" name="prob_threshold" value="0.6" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Take Profit % (e.g. 0.2=20%):</label>
-        <input type="number" name="take_profit_percent" value="0.2" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Take Profit % (e.g. 0.2=20%):</label>
+        <input type="number" name="take_profit_percent" value="0.2" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4 d-flex align-items-end">
-        <div class="form-check">
-          <input type="checkbox" name="trailing_stop" class="form-check-input" id="trailingStopCheckSingle"/>
-          <label for="trailingStopCheckSingle" class="form-check-label">Trailing Stop?</label>
-        </div>
+      <div class="flex items-center space-x-2">
+        <input type="checkbox" name="trailing_stop" class="h-4 w-4" id="trailingStopCheckSingle"/>
+        <label for="trailingStopCheckSingle" class="text-sm">Trailing Stop?</label>
       </div>
 
-      <div class="col-12">
-        <button type="submit" class="btn btn-primary">Run Advanced Backtest</button>
-        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a>
+      <div class="sm:col-span-2 mt-2">
+        <button type="submit"
+                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 mr-2">
+          Run Advanced Backtest
+        </button>
+        <a href="{{ url_for('index') }}"
+           class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">Back to Home</a>
       </div>
     </form>
     """
@@ -789,7 +794,7 @@ def backtest_advanced():
     )
 
     if final_val is None:
-        body_html = f"<p>Error: {final_ret_str}</p>"
+        body_html = f"<p class='text-red-600'>Error: {final_ret_str}</p>"
         return render_template_string(render_bootstrap_page("Advanced Backtest Results", body_html))
 
     # Plot
@@ -808,62 +813,77 @@ def backtest_advanced():
     trailing_check = 'checked' if trailing_stop else ''
 
     re_run_form = f"""
-    <hr>
-    <h3>Refine Your Backtest</h3>
-    <form method="GET" action="{url_for('backtest_advanced')}" class="row g-3 mt-2">
-      <div class="col-md-6">
-        <label class="form-label">Ticker:</label>
-        <select name="ticker" class="form-select">
+    <hr class="my-4 border-gray-300">
+    <h3 class="text-lg font-semibold mb-2">Refine Your Backtest</h3>
+    <form method="GET" action="{url_for('backtest_advanced')}" class="grid gap-4 sm:grid-cols-2 mt-2">
+      <div>
+        <label class="block mb-1 font-medium">Ticker:</label>
+        <select name="ticker" class="w-full border border-gray-300 rounded px-2 py-1">
           {"".join(f'<option value="{t}" {"selected" if t == ticker else ""}>{t}</option>' for t in tickers)}
         </select>
       </div>
-      <div class="col-md-6">
-        <label class="form-label">Model:</label>
-        <select name="model_name" class="form-select">
+      <div>
+        <label class="block mb-1 font-medium">Model:</label>
+        <select name="model_name" class="w-full border border-gray-300 rounded px-2 py-1">
           {"".join(f'<option value="{m}" {"selected" if m == model_name else ""}>{m}</option>' 
                   for m in model_names_list)}
         </select>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Initial Capital:</label>
-        <input type="number" name="initial_capital" value="{initial_cap}" step="100" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Initial Capital:</label>
+        <input type="number" name="initial_capital" value="{initial_cap}" step="100"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Stop-Loss %:</label>
-        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Stop-Loss %:</label>
+        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Partial Sell Ratio:</label>
-        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Partial Sell Ratio:</label>
+        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Probability Threshold:</label>
-        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Probability Threshold:</label>
+        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">Take Profit %:</label>
-        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Take Profit %:</label>
+        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
-      <div class="col-md-4 d-flex align-items-end">
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" name="trailing_stop" {trailing_check} id="checkTS"/>
-          <label class="form-check-label" for="checkTS">Trailing Stop?</label>
-        </div>
+      <div class="flex items-center space-x-2">
+        <input class="h-4 w-4" type="checkbox" name="trailing_stop" {trailing_check} id="checkTS"/>
+        <label class="text-sm" for="checkTS">Trailing Stop?</label>
       </div>
-      <div class="col-12">
-        <button type="submit" class="btn btn-primary">Re-Run Backtest</button>
+      <div class="sm:col-span-2 mt-2">
+        <button type="submit"
+                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+          Re-Run Backtest
+        </button>
       </div>
     </form>
     """
 
     body_html = f"""
-    <h1>Advanced Backtest Results</h1>
-    <h5>{ticker} - {model_name}</h5>
-    <div class="mt-3">{result_html}</div>
-    <div class="mt-4"><img src="data:image/png;base64,{encoded_img}" class="img-fluid" alt="Chart"/></div>
-    <div class="mt-5">{re_run_form}</div>
-    <hr class="my-4">
-    <p><a href="{{{{ url_for('select_backtest_advanced') }}}}" class="btn btn-secondary">Go to Full Advanced Setup Page</a></p>
+    <h1 class="text-xl font-bold mb-4">Advanced Backtest Results</h1>
+    <h5 class="text-md font-semibold mb-3">{ticker} - {model_name}</h5>
+    <div class="mt-3 text-sm">{result_html}</div>
+    <div class="mt-4">
+      <img src="data:image/png;base64,{encoded_img}" class="mx-auto" alt="Chart"/>
+    </div>
+    <div class="mt-5">
+      {re_run_form}
+    </div>
+    <hr class="my-6">
+    <p>
+      <a href="{{{{ url_for('select_backtest_advanced') }}}}"
+         class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
+         Go to Full Advanced Setup Page
+      </a>
+    </p>
     """
     return render_template_string(render_bootstrap_page("Advanced Backtest Results", body_html))
 
@@ -903,175 +923,200 @@ def select_backtest_portfolio():
     # GET => show the multiple ticker selection form
     form_html = """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <title>Portfolio Backtesting Setup</title>
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+      <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        .container { max-width: 900px; margin-top: 40px; }
-        .ticker-box { min-width: 180px; }
-        .button-group { margin-top: 10px; }
+        .ticker-box { min-width: 150px; max-height: 240px; }
       </style>
     </head>
-    <body class="bg-light">
-    <div class="container">
-      <h1 class="mb-4">Portfolio Backtesting Setup</h1>
-      <p>Type or search a ticker below and click "Add" to move it to your selected list. 
-         Click "Select All" to add all tickers at once. Then "Remove" to remove from your list if needed.</p>
+    <body class="bg-gray-100 text-gray-800">
+      <div class="max-w-4xl mx-auto px-4 py-6">
+        <h1 class="text-xl font-bold mb-4">Portfolio Backtesting Setup</h1>
+        <p class="text-sm mb-4">
+          Type or search a ticker below and click <strong>Add</strong> to move it to your selected list.
+          Click <strong>Select All</strong> to add all tickers at once. Then <strong>Remove</strong> to remove from your list if needed.
+        </p>
 
-      <div class="row mb-3">
-        <div class="col-12 col-md-6 mb-2">
-          <label for="ticker_search" class="form-label">Search Ticker:</label>
-          <input type="text" id="ticker_search" onkeyup="filterTickers()" 
-                 class="form-control" placeholder="Type to filter...">
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-12 col-md-5">
-          <h5>All Tickers</h5>
-          <select id="all_tickers" size="10" class="form-select ticker-box">
-            {% for t in tickers %}
-            <option value="{{t}}">{{t}}</option>
-            {% endfor %}
-          </select>
-          <div class="button-group">
-            <button type="button" class="btn btn-sm btn-primary" onclick="addTicker()">Add &raquo;</button>
-            <button type="button" class="btn btn-sm btn-success" onclick="selectAllTickers()">Select All</button>
+        <div class="flex flex-col sm:flex-row mb-4 space-y-4 sm:space-y-0 sm:space-x-6">
+          <div class="sm:w-1/2">
+            <label for="ticker_search" class="block mb-1 font-medium">Search Ticker:</label>
+            <input type="text" id="ticker_search"
+                   onkeyup="filterTickers()"
+                   class="w-full border border-gray-300 rounded px-2 py-1"
+                   placeholder="Type to filter..." />
           </div>
         </div>
 
-        <div class="col-12 col-md-5">
-          <h5>Selected Tickers</h5>
-          <select id="selected_tickers_list" size="10" class="form-select ticker-box"></select>
-          <br>
-          <button type="button" class="btn btn-sm btn-danger" onclick="removeTicker()">&laquo; Remove</button>
-        </div>
-      </div>
+        <div class="flex flex-col sm:flex-row gap-6">
+          <div>
+            <h5 class="font-semibold mb-1">All Tickers</h5>
+            <select id="all_tickers" size="10"
+                    class="ticker-box w-full border border-gray-300 rounded px-2 py-1">
+              {% for t in tickers %}
+              <option value="{{t}}">{{t}}</option>
+              {% endfor %}
+            </select>
+            <div class="mt-2 space-x-2">
+              <button type="button"
+                      class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 text-sm"
+                      onclick="addTicker()">
+                Add &raquo;
+              </button>
+              <button type="button"
+                      class="bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 text-sm"
+                      onclick="selectAllTickers()">
+                Select All
+              </button>
+            </div>
+          </div>
 
-      <hr class="my-4">
-
-      <form method="POST" id="portfolioForm" class="row g-3">
-        <input type="hidden" name="selected_tickers" id="hidden_selected_tickers">
-
-        <div class="col-md-4">
-          <label class="form-label">Model:</label>
-          <select name="model_name" class="form-select">
-            {% for m in model_names %}
-            <option value="{{m}}">{{m}}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="col-md-4">
-          <label class="form-label">Initial Capital:</label>
-          <input type="number" name="initial_capital" value="10000" step="100" class="form-control" />
-        </div>
-
-        <div class="col-md-4">
-          <label class="form-label">Stop-Loss %:</label>
-          <input type="number" name="stop_loss_percent" value="0.05" step="0.01" class="form-control" />
-        </div>
-
-        <div class="col-md-4">
-          <label class="form-label">Partial Sell Ratio:</label>
-          <input type="number" name="partial_sell_ratio" value="0.5" step="0.1" class="form-control" />
-        </div>
-
-        <div class="col-md-4">
-          <label class="form-label">Probability Threshold (0~1):</label>
-          <input type="number" name="prob_threshold" value="0.6" step="0.05" class="form-control" />
-        </div>
-
-        <div class="col-md-4">
-          <div class="form-check mt-4">
-            <input type="checkbox" name="trailing_stop" class="form-check-input" id="trailingStopCheck" />
-            <label for="trailingStopCheck" class="form-check-label">Trailing Stop?</label>
+          <div>
+            <h5 class="font-semibold mb-1">Selected Tickers</h5>
+            <select id="selected_tickers_list" size="10"
+                    class="ticker-box w-full border border-gray-300 rounded px-2 py-1">
+            </select>
+            <button type="button"
+                    class="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 text-sm mt-2"
+                    onclick="removeTicker()">
+              &laquo; Remove
+            </button>
           </div>
         </div>
 
-        <div class="col-md-4">
-          <label class="form-label">Take Profit %:</label>
-          <input type="number" name="take_profit_percent" value="0.2" step="0.05" class="form-control" />
-        </div>
+        <hr class="my-6 border-gray-300">
 
-        <div class="col-12">
-          <button type="submit" onclick="prepareSelectedTickers()" class="btn btn-success">Run Portfolio Backtest</button>
-          <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Home</a>
-        </div>
-      </form>
-    </div>
+        <form method="POST" id="portfolioForm" class="grid gap-4 sm:grid-cols-3">
+          <input type="hidden" name="selected_tickers" id="hidden_selected_tickers">
 
-    <script>
-      function addTicker(){
-        const allList = document.getElementById('all_tickers');
-        const selList = document.getElementById('selected_tickers_list');
-        if(allList.selectedIndex >= 0){
-          let opt = allList.options[allList.selectedIndex];
-          let exists = false;
+          <div>
+            <label class="block mb-1 font-medium">Model:</label>
+            <select name="model_name" class="w-full border border-gray-300 rounded px-2 py-1">
+              {% for m in model_names %}
+              <option value="{{m}}">{{m}}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div>
+            <label class="block mb-1 font-medium">Initial Capital:</label>
+            <input type="number" name="initial_capital" value="10000" step="100"
+                   class="w-full border border-gray-300 rounded px-2 py-1"/>
+          </div>
+
+          <div>
+            <label class="block mb-1 font-medium">Stop-Loss %:</label>
+            <input type="number" name="stop_loss_percent" value="0.05" step="0.01"
+                   class="w-full border border-gray-300 rounded px-2 py-1"/>
+          </div>
+
+          <div>
+            <label class="block mb-1 font-medium">Partial Sell Ratio:</label>
+            <input type="number" name="partial_sell_ratio" value="0.5" step="0.1"
+                   class="w-full border border-gray-300 rounded px-2 py-1"/>
+          </div>
+
+          <div>
+            <label class="block mb-1 font-medium">Probability Threshold (0~1):</label>
+            <input type="number" name="prob_threshold" value="0.6" step="0.05"
+                   class="w-full border border-gray-300 rounded px-2 py-1"/>
+          </div>
+
+          <div class="flex items-center space-x-2 mt-6">
+            <input type="checkbox" name="trailing_stop" class="h-4 w-4" id="trailingStopCheck" />
+            <label for="trailingStopCheck" class="text-sm">Trailing Stop?</label>
+          </div>
+
+          <div>
+            <label class="block mb-1 font-medium">Take Profit %:</label>
+            <input type="number" name="take_profit_percent" value="0.2" step="0.05"
+                   class="w-full border border-gray-300 rounded px-2 py-1"/>
+          </div>
+
+          <div class="sm:col-span-3">
+            <button type="submit"
+                    onclick="prepareSelectedTickers()"
+                    class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 mr-2">
+              Run Portfolio Backtest
+            </button>
+            <a href="{{ url_for('index') }}"
+               class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">Back to Home</a>
+          </div>
+        </form>
+      </div>
+
+      <script>
+        function addTicker(){
+          const allList = document.getElementById('all_tickers');
+          const selList = document.getElementById('selected_tickers_list');
+          if(allList.selectedIndex >= 0){
+            let opt = allList.options[allList.selectedIndex];
+            let exists = false;
+            for(let i=0; i<selList.options.length; i++){
+              if(selList.options[i].value === opt.value){
+                exists = true;
+                break;
+              }
+            }
+            if(!exists){
+              let newOpt = document.createElement('option');
+              newOpt.value = opt.value;
+              newOpt.text = opt.text;
+              selList.add(newOpt);
+            }
+          }
+        }
+
+        function selectAllTickers(){
+          const allList = document.getElementById('all_tickers');
+          const selList = document.getElementById('selected_tickers_list');
+          for(let i=0; i<allList.options.length; i++){
+            let opt = allList.options[i];
+            let exists = false;
+            for(let j=0; j<selList.options.length; j++){
+              if(selList.options[j].value === opt.value){
+                exists = true;
+                break;
+              }
+            }
+            if(!exists){
+              let newOpt = document.createElement('option');
+              newOpt.value = opt.value;
+              newOpt.text = opt.text;
+              selList.add(newOpt);
+            }
+          }
+        }
+
+        function removeTicker(){
+          const selList = document.getElementById('selected_tickers_list');
+          if(selList.selectedIndex >= 0){
+            selList.remove(selList.selectedIndex);
+          }
+        }
+
+        function prepareSelectedTickers(){
+          const selList = document.getElementById('selected_tickers_list');
+          const hiddenField = document.getElementById('hidden_selected_tickers');
+          let values = [];
           for(let i=0; i<selList.options.length; i++){
-            if(selList.options[i].value === opt.value){
-              exists = true;
-              break;
-            }
+            values.push(selList.options[i].value);
           }
-          if(!exists){
-            let newOpt = document.createElement('option');
-            newOpt.value = opt.value;
-            newOpt.text = opt.text;
-            selList.add(newOpt);
-          }
+          hiddenField.value = values.join(',');
         }
-      }
 
-      function selectAllTickers(){
-        const allList = document.getElementById('all_tickers');
-        const selList = document.getElementById('selected_tickers_list');
-        for(let i=0; i<allList.options.length; i++){
-          let opt = allList.options[i];
-          let exists = false;
-          for(let j=0; j<selList.options.length; j++){
-            if(selList.options[j].value === opt.value){
-              exists = true;
-              break;
-            }
-          }
-          if(!exists){
-            let newOpt = document.createElement('option');
-            newOpt.value = opt.value;
-            newOpt.text = opt.text;
-            selList.add(newOpt);
+        function filterTickers(){
+          let input = document.getElementById('ticker_search');
+          let filter = input.value.toUpperCase();
+          let allList = document.getElementById('all_tickers');
+          for(let i=0; i<allList.options.length; i++){
+            let txt = allList.options[i].text.toUpperCase();
+            allList.options[i].style.display = (txt.indexOf(filter) > -1) ? "" : "none";
           }
         }
-      }
-
-      function removeTicker(){
-        const selList = document.getElementById('selected_tickers_list');
-        if(selList.selectedIndex >= 0){
-          selList.remove(selList.selectedIndex);
-        }
-      }
-
-      function prepareSelectedTickers(){
-        const selList = document.getElementById('selected_tickers_list');
-        const hiddenField = document.getElementById('hidden_selected_tickers');
-        let values = [];
-        for(let i=0; i<selList.options.length; i++){
-          values.push(selList.options[i].value);
-        }
-        hiddenField.value = values.join(',');
-      }
-
-      function filterTickers(){
-        let input = document.getElementById('ticker_search');
-        let filter = input.value.toUpperCase();
-        let allList = document.getElementById('all_tickers');
-        for(let i=0; i<allList.options.length; i++){
-          let txt = allList.options[i].text.toUpperCase();
-          allList.options[i].style.display = (txt.indexOf(filter) > -1) ? "" : "none";
-        }
-      }
-    </script>
+      </script>
     </body>
     </html>
     """
@@ -1093,7 +1138,7 @@ def backtest_portfolio():
     take_profit_percent = float(request.args.get('take_profit_percent', '0.2'))
 
     if not tickers_str.strip():
-        return "<p>Error: No tickers provided.</p>"
+        return "<p class='text-red-600'>Error: No tickers provided.</p>"
 
     selected_tickers = [t.strip() for t in tickers_str.split(',') if t.strip()]
     final_val, final_ret_str, daily_dates, daily_values, metrics = advanced_backtest_portfolio(
@@ -1106,7 +1151,7 @@ def backtest_portfolio():
         take_profit_percent=take_profit_percent
     )
     if final_val is None:
-        return f"<p>Error: {final_ret_str}</p>"
+        return f"<p class='text-red-600'>Error: {final_ret_str}</p>"
 
     # Plot the combined daily_values
     encoded_img = plot_portfolio(daily_dates, daily_values,
@@ -1121,69 +1166,79 @@ def backtest_portfolio():
 
     trailing_check = 'checked' if trailing_stop else ''
     re_run_form = f"""
-    <hr>
-    <h3>Refine Your Portfolio Backtest</h3>
-    <form method="GET" action="{url_for('backtest_portfolio')}" class="row g-3 mt-2">
+    <hr class="my-4 border-gray-300">
+    <h3 class="text-lg font-semibold mb-2">Refine Your Portfolio Backtest</h3>
+    <form method="GET" action="{url_for('backtest_portfolio')}" class="grid gap-4 sm:grid-cols-3 mt-2">
       <input type="hidden" name="tickers" value="{tickers_str}" />
 
-      <div class="col-md-4">
-        <label class="form-label">Model:</label>
-        <select name="model_name" class="form-select">
+      <div>
+        <label class="block mb-1 font-medium">Model:</label>
+        <select name="model_name" class="w-full border border-gray-300 rounded px-2 py-1">
           <option value="LogisticRegression" {"selected" if model_name == "LogisticRegression" else ""}>LogisticRegression</option>
           <option value="RandomForest" {"selected" if model_name == "RandomForest" else ""}>RandomForest</option>
           <option value="MLP" {"selected" if model_name == "MLP" else ""}>MLP</option>
         </select>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Initial Capital:</label>
-        <input type="number" name="initial_capital" value="{initial_cap}" step="100" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Initial Capital:</label>
+        <input type="number" name="initial_capital" value="{initial_cap}" step="100"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Stop-Loss %:</label>
-        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Stop-Loss %:</label>
+        <input type="number" name="stop_loss_percent" value="{stop_loss_percent}" step="0.01"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Partial Sell Ratio:</label>
-        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Partial Sell Ratio:</label>
+        <input type="number" name="partial_sell_ratio" value="{partial_sell_ratio}" step="0.1"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Probability Threshold:</label>
-        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Probability Threshold:</label>
+        <input type="number" name="prob_threshold" value="{prob_threshold}" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
 
-      <div class="col-md-4 d-flex align-items-end">
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" name="trailing_stop" {trailing_check} id="trailingStopCheck2">
-          <label class="form-check-label" for="trailingStopCheck2">Trailing Stop?</label>
-        </div>
+      <div class="flex items-center space-x-2">
+        <input class="h-4 w-4" type="checkbox" name="trailing_stop" {trailing_check} id="trailingStopCheck2">
+        <label class="text-sm" for="trailingStopCheck2">Trailing Stop?</label>
       </div>
 
-      <div class="col-md-4">
-        <label class="form-label">Take Profit %:</label>
-        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05" class="form-control"/>
+      <div>
+        <label class="block mb-1 font-medium">Take Profit %:</label>
+        <input type="number" name="take_profit_percent" value="{take_profit_percent}" step="0.05"
+               class="w-full border border-gray-300 rounded px-2 py-1"/>
       </div>
 
-      <div class="col-12">
-        <button type="submit" class="btn btn-primary">Re-Run Portfolio Backtest</button>
+      <div class="sm:col-span-3">
+        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+          Re-Run Portfolio Backtest
+        </button>
       </div>
     </form>
     """
 
     body_html = f"""
-    <h1>Portfolio Backtest Results</h1>
-    <h5>Tickers: {', '.join(selected_tickers)} - {model_name}</h5>
-    <div class="mt-3">{result_html}</div>
+    <h1 class="text-xl font-bold mb-4">Portfolio Backtest Results</h1>
+    <h5 class="text-md font-semibold mb-2">Tickers: {', '.join(selected_tickers)} - {model_name}</h5>
+    <div class="mt-3 text-sm">{result_html}</div>
     <div class="mt-4">
-      <img src="data:image/png;base64,{encoded_img}" class="img-fluid" alt="Portfolio Chart"/>
+      <img src="data:image/png;base64,{encoded_img}" class="mx-auto" alt="Portfolio Chart"/>
     </div>
 
     <div class="mt-5">{re_run_form}</div>
-    <hr class="my-4">
-    <p><a href="{{{{ url_for('select_backtest_portfolio') }}}}" class="btn btn-secondary">Back to Portfolio Setup</a></p>
+    <hr class="my-6 border-gray-300">
+    <p>
+      <a href="{{{{ url_for('select_backtest_portfolio') }}}}"
+         class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
+         Back to Portfolio Setup
+      </a>
+    </p>
     """
     return render_template_string(render_bootstrap_page("Portfolio Backtest Results", body_html))
 
@@ -1198,17 +1253,17 @@ def predict_next_day():
     if request.method == 'POST':
         ticker = request.form.get('ticker')
         if ticker not in MODELS:
-            return render_template_string("<p>Error: No model for this ticker. Please train first.</p>")
+            return render_template_string("<p class='text-red-600'>Error: No model for this ticker. Please train first.</p>")
 
         df = load_data_for_ticker(ticker)
         df = compute_indicators(df)
         if df.empty:
-            return render_template_string("<p>Error: No data available.</p>")
+            return render_template_string("<p class='text-red-600'>Error: No data available.</p>")
 
         last_row = df.iloc[[-1]].copy()
         last_row.dropna(inplace=True)
         if last_row.empty:
-            return render_template_string("<p>Error: Not enough data to predict.</p>")
+            return render_template_string("<p class='text-red-600'>Error: Not enough data to predict.</p>")
 
         feature_cols = [
             'Close','High','Low','Open','Volume',
@@ -1241,32 +1296,45 @@ def predict_next_day():
             suggestion = "HOLD (Predicted move is within ±2%)"
 
         result_html = f"""
-        <h3>Predictions for Ticker: {ticker}</h3>
+        <h3 class="text-lg font-bold mb-2">Predictions for Ticker: {ticker}</h3>
         <p>Tomorrow's Predicted OPEN:  {pred_open:.2f}</p>
         <p>Tomorrow's Predicted HIGH:  {pred_high:.2f}</p>
         <p>Tomorrow's Predicted LOW:   {pred_low:.2f}</p>
         <p>Tomorrow's Predicted CLOSE: {pred_close:.2f}</p>
         <p>Current Close: {current_close:.2f}</p>
         <p>Predicted % Diff vs Current Close: {pct_diff:.2f}%</p>
-        <h4>Suggested Action: {suggestion}</h4>
-        <p><a href='{url_for('predict_next_day')}'>Back to Predict Page</a></p>
+        <h4 class="text-md font-semibold mt-3">Suggested Action: {suggestion}</h4>
+        <p class="mt-4">
+          <a href='{url_for('predict_next_day')}'
+             class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
+             Back to Predict Page
+          </a>
+        </p>
         """
         return render_template_string(result_html)
 
     # GET => minimal form
     form_html = """
-    <h1>Predict Next Day O/H/L/C</h1>
-    <form method="POST">
-      <label>Ticker:</label>
-      <select name="ticker">
+    <h1 class="text-xl font-bold mb-4">Predict Next Day O/H/L/C</h1>
+    <form method="POST" class="mb-6">
+      <label class="block mb-1 font-medium">Ticker:</label>
+      <select name="ticker" class="border border-gray-300 rounded px-2 py-1">
         {% for t in tickers %}
         <option value="{{t}}">{{t}}</option>
         {% endfor %}
       </select>
       <br><br>
-      <button type="submit">Predict Next Day</button>
+      <button type="submit"
+              class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+        Predict Next Day
+      </button>
     </form>
-    <p><a href="{{ url_for('index') }}">Back to Home</a></p>
+    <p>
+      <a href="{{ url_for('index') }}"
+         class="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400">
+         Back to Home
+      </a>
+    </p>
     """
     return render_template_string(render_bootstrap_page("Predict Next Day O/H/L/C", form_html),
                                   tickers=tickers)
